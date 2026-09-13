@@ -248,9 +248,11 @@ def build_municipality_context(bfs):
     State('address_input', 'value'),
 )
 def update_map(n_clicks, n_submit, address):
-    ctx = dash.callback_context
-    if not ctx.triggered or ctx.triggered[0]['prop_id'].split('.')[0] not in ('search_button', 'address_input'):
-        return dash.no_update
+    # Kein ctx.triggered-Guard mehr: beim initialen Rendern mit über ?query= vorbefüllter
+    # Adresse (layout(query=...)) ist ctx.triggered leer (Dash-eigenes Verhalten für den
+    # "einmaligen Aufruf mit den initialen Prop-Werten"), was den Guard fälschlich auslöste
+    # und die Karte nie befüllte - obwohl die Adresse schon da war. `if not address` reicht
+    # als Schutz vollkommen aus (identisch zu store_parcel_data unten).
     if not address:
         return ''
     coords = get_coordinates(clean_address(address))
