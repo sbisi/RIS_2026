@@ -9,12 +9,21 @@ wurde - mit doppelt registrierten @callback-Outputs (z.B. "map.src") als Folge. 
 services/-Modul wird diese Datei nur einmal reg­ulär importiert.
 """
 import json
+import logging
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from pyproj import Transformer
 from shapely.geometry import shape
 
+logger = logging.getLogger(__name__)
+
 GEODIENSTE_CRS = 'http://www.opengis.net/def/crs/EPSG/0/2056'
+# Grosszügiger bemessen als für lokale Entwicklung nötig: auf gehosteten Umgebungen (z.B.
+# Render) ist die Round-Trip-Zeit zu den Schweizer Bundes-Geodiensten oft spürbar länger als
+# von einer lokalen/Schweizer Leitung aus - ein zu knapper Timeout sah dort wie ein "kein
+# Ergebnis" aus (still abgefangen), obwohl die Anfrage nur noch unterwegs war.
+REQUEST_TIMEOUT = 15
 
 
 def convert_coordinates(x, y, from_epsg='EPSG:4326', to_epsg='EPSG:2056'):
@@ -40,16 +49,18 @@ def get_coordinates(address):
     try:
         r = requests.get(
             'https://api3.geo.admin.ch/rest/services/api/SearchServer',
-            params={'searchText': address, 'type': 'locations'}, timeout=10,
+            params={'searchText': address, 'type': 'locations'}, timeout=REQUEST_TIMEOUT,
         )
         r.raise_for_status()
         data = r.json()
         if not data.get('results'):
+            logger.warning('get_coordinates: keine Treffer für Adresse %r', address)
             return None
         attrs = data['results'][0].get('attrs', {})
         lon, lat = attrs.get('lon'), attrs.get('lat')
         return (float(lon), float(lat)) if lon is not None and lat is not None else None
-    except requests.exceptions.RequestException:
+    except requests.exceptions.RequestException as e:
+        logger.warning('get_coordinates: Anfrage an api3.geo.admin.ch fehlgeschlagen für %r: %s', address, e)
         return None
 
 
@@ -62,7 +73,7 @@ def get_parcel_data(lon, lat):
         'returnGeometry': True, 'geometryFormat': 'geojson', 'f': 'json',
     }
     try:
-        response = requests.get(url, params=params, timeout=5)
+        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         data = response.json()
         if data.get('results'):
@@ -77,8 +88,9 @@ def get_parcel_data(lon, lat):
                 except Exception:
                     area = None
             return parcel_id, parcel_name, e, n, area
-    except requests.exceptions.RequestException:
-        pass
+        logger.warning('get_parcel_data: keine Parzelle an Koordinaten e=%s n=%s (amtliche Vermessung ohne Treffer)', e, n)
+    except requests.exceptions.RequestException as ex:
+        logger.warning('get_parcel_data: Anfrage an api3.geo.admin.ch fehlgeschlagen für e=%s n=%s: %s', e, n, ex)
     return None, None, None, None, None
 
 
@@ -92,10 +104,11 @@ def get_bauzonen_info(e, n):
         'layers': 'all:ch.are.bauzonen', 'tolerance': 0, 'returnGeometry': False, 'f': 'json',
     }
     try:
-        response = requests.get(url, params=params, timeout=5)
+        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         results = response.json().get('results', [])
         if not results:
+            logger.warning('get_bauzonen_info: keine Bauzone an Koordinaten e=%s n=%s', e, n)
             return None
         attrs = results[0].get('attributes', {}) or {}
         zone_category = (attrs.get('ch_bez_d') or attrs.get('ch_bez_f') or attrs.get('typ_bez')
@@ -106,7 +119,8 @@ def get_bauzonen_info(e, n):
             'bfs': int(bfs) if bfs not in (None, '') else None,
             'zone_category': zone_category,
         }
-    except requests.exceptions.RequestException:
+    except requests.exceptions.RequestException as e_:
+        logger.warning('get_bauzonen_info: Anfrage an api3.geo.admin.ch fehlgeschlagen für e=%s n=%s: %s', e, n, e_)
         return None
 
 
@@ -127,6 +141,29 @@ def extract_documents(document_field):
         return []
 
 
+def _fetch_overlay_collection(collection, minx, miny, maxx, maxy):
+    url = f'https://www.geodienste.ch/db/npl_nutzungsplanung_v1_2_0/deu/ogcapi/collections/{collection}/items'
+    params = {'f': 'json', 'bbox': f'{minx},{miny},{maxx},{maxy}', 'limit': 20, 'crs': GEODIENSTE_CRS}
+    try:
+        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        result = []
+        for feature in response.json().get('features', []):
+            props = feature.get('properties', {})
+            label = (
+                props.get('typ_kommunal_bezeichnung') or props.get('typ_kantonal_bezeichnung')
+                or props.get('hauptnutzung_bezeichnung') or props.get('typ_kommunal_code')
+                or props.get('typ_kantonal_code')
+            )
+            if label:
+                result.append({'collection': collection, 'label': label,
+                                'rechtsstatus': props.get('rechtsstatus'), 'publiziertab': props.get('publiziertab')})
+        return result
+    except requests.exceptions.RequestException as ex:
+        logger.warning('get_overlay_data_from_geodienste: Anfrage an geodienste.ch (%s) fehlgeschlagen: %s', collection, ex)
+        return []
+
+
 def get_overlay_data_from_geodienste(e, n):
     lon, lat = convert_coordinates(e, n, 'EPSG:2056', 'EPSG:4326')
     delta = 0.002
@@ -136,25 +173,14 @@ def get_overlay_data_from_geodienste(e, n):
         'ueberlagernde_nutzungsplaninhalte_linie',
         'ueberlagernde_nutzungsplaninhalte_punkt',
     ]
-    overlays = []
-    for collection in collections:
-        url = f'https://www.geodienste.ch/db/npl_nutzungsplanung_v1_2_0/deu/ogcapi/collections/{collection}/items'
-        params = {'f': 'json', 'bbox': f'{minx},{miny},{maxx},{maxy}', 'limit': 20, 'crs': GEODIENSTE_CRS}
-        try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            for feature in response.json().get('features', []):
-                props = feature.get('properties', {})
-                label = (
-                    props.get('typ_kommunal_bezeichnung') or props.get('typ_kantonal_bezeichnung')
-                    or props.get('hauptnutzung_bezeichnung') or props.get('typ_kommunal_code')
-                    or props.get('typ_kantonal_code')
-                )
-                if label:
-                    overlays.append({'collection': collection, 'label': label,
-                                      'rechtsstatus': props.get('rechtsstatus'), 'publiziertab': props.get('publiziertab')})
-        except requests.exceptions.RequestException:
-            continue
+    # Die 3 Collections sind unabhängig voneinander - parallel statt sequenziell abfragen,
+    # damit ein einzelner langsamer/zeitüberschreitender Call nicht die anderen blockiert
+    # (auf gehosteten Umgebungen mit langsamerer Anbindung an geodienste.ch summierten sich
+    # 3 sequenzielle Timeouts sonst zu einer sehr langen Gesamtwartezeit).
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        results = executor.map(lambda c: _fetch_overlay_collection(c, minx, miny, maxx, maxy), collections)
+    overlays = [item for sublist in results for item in sublist]
+
     seen, unique = set(), []
     for item in overlays:
         key = (item['collection'], item['label'])
@@ -171,10 +197,11 @@ def get_zone_data_from_geodienste(e, n):
     minx, miny, maxx, maxy = lon - delta, lat - delta, lon + delta, lat + delta
     params = {'f': 'json', 'bbox': f'{minx},{miny},{maxx},{maxy}', 'limit': 50, 'crs': GEODIENSTE_CRS}
     try:
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         features = response.json().get('features', [])
         if not features:
+            logger.warning('get_zone_data_from_geodienste: keine Nutzungsplan-Features an e=%s n=%s', e, n)
             return None
         props = next((f.get('properties', {}) for f in features
                       if f.get('properties', {}).get('typ_kommunal_bezeichnung')
@@ -191,30 +218,42 @@ def get_zone_data_from_geodienste(e, n):
                 'zone_kantonal': kantonal_zone, 'zone_kommunal': kommunal_zone,
                 'legal_status': props.get('rechtsstatus'), 'published_from': props.get('publiziertab'),
                 'documents': extract_documents(props.get('dokument')),
-                'overlays': get_overlay_data_from_geodienste(e, n),
                 'zone_source': 'geodienste.ch grundnutzung',
             }
-    except requests.exceptions.RequestException:
-        pass
+    except requests.exceptions.RequestException as ex:
+        logger.warning('get_zone_data_from_geodienste: Anfrage an geodienste.ch fehlgeschlagen für e=%s n=%s: %s', e, n, ex)
     return None
 
 
 def get_zone_data(e, n):
-    """1) Detailzone über geodienste.ch, 2) Fallback auf ch.are.bauzonen.
-    Die BFS-Nummer kommt in jedem Fall aus ch.are.bauzonen (geodienste.ch liefert keine),
-    daher wird dieser Call immer ausgeführt - für den späteren Zonenparameter-Join."""
-    bauzonen = get_bauzonen_info(e, n) or {}
+    """1) Detailzone über geodienste.ch, 2) Fallback auf ch.are.bauzonen. Die BFS-Nummer
+    kommt in jedem Fall aus ch.are.bauzonen (geodienste.ch liefert keine), daher wird dieser
+    Call immer ausgeführt - für den späteren Zonenparameter-Join.
+
+    Die drei zugrundeliegenden Lookups (Bauzonen, Detailzone, Überlagerungen) sind voneinander
+    unabhängig - vorher liefen sie sequenziell (inkl. 3 sequenzieller Requests allein für die
+    Überlagerungen), was sich auf einer gehosteten Umgebung mit langsamerer/instabilerer
+    Anbindung an geo.admin.ch/geodienste.ch zu >50s Gesamtwartezeit summieren konnte. Parallel
+    ausgeführt limitiert die Gesamtdauer der langsamste einzelne Call statt deren Summe."""
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        f_bauzonen = executor.submit(get_bauzonen_info, e, n)
+        f_zone = executor.submit(get_zone_data_from_geodienste, e, n)
+        f_overlays = executor.submit(get_overlay_data_from_geodienste, e, n)
+        bauzonen = f_bauzonen.result() or {}
+        detailed_result = f_zone.result()
+        overlays = f_overlays.result()
+
     bfs, canton = bauzonen.get('bfs'), bauzonen.get('canton')
 
-    detailed_result = get_zone_data_from_geodienste(e, n)
     if detailed_result:
         detailed_result['canton'] = detailed_result.get('canton') or canton
         detailed_result['bfs'] = bfs
+        detailed_result['overlays'] = overlays
         return detailed_result
 
     return {
         'canton': canton, 'bfs': bfs, 'zone_detail': None,
         'zone_category': bauzonen.get('zone_category', 'Keine Zone gefunden'),
         'zone_kantonal': None, 'zone_kommunal': None, 'legal_status': None, 'published_from': None,
-        'documents': [], 'overlays': [], 'zone_source': 'ch.are.bauzonen' if bauzonen else 'keine Quelle',
+        'documents': [], 'overlays': overlays, 'zone_source': 'ch.are.bauzonen' if bauzonen else 'keine Quelle',
     }
