@@ -420,4 +420,51 @@ def project_filter_options():
     return fsa, devtype
 
 def _projects_filter_clause(canton_id, bfs, fsa_code, devtype_code, min_days, max_days, date_from, date_to):
-    joins, clauses, params = '
+    joins, clauses, params = '', [], []
+    if fsa_code:
+        joins += ' JOIN bridge_project_fsa bpf ON bpf.PROJID=fp.PROJID AND bpf.IS_PRIMARY'
+        clauses.append('bpf.FSA_CODE=?'); params.append(fsa_code)
+    if devtype_code:
+        joins += ' JOIN bridge_project_devtype bpd ON bpd.PROJID=fp.PROJID AND bpd.IS_PRIMARY'
+        clauses.append('bpd.DEVTYPE=?'); params.append(devtype_code)
+    if bfs:
+        clauses.append('fp.BFS=?'); params.append(int(bfs))
+    elif canton_id:
+        clauses.append('c.canton_id=?'); params.append(int(canton_id))
+    if min_days is not None:
+        clauses.append('fp.processing_days>=?'); params.append(min_days)
+    if max_days is not None:
+        clauses.append('fp.processing_days<=?'); params.append(max_days)
+    if date_from:
+        clauses.append('fp.applied_date>=?'); params.append(date_from)
+    if date_to:
+        clauses.append('fp.applied_date<=?'); params.append(date_to)
+    where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
+    return joins, where, params
+
+def projects_table(canton_id=None, bfs=None, fsa_code=None, devtype_code=None, min_days=None, max_days=None,
+                    date_from=None, date_to=None, limit=500):
+    joins, where, params = _projects_filter_clause(canton_id, bfs, fsa_code, devtype_code, min_days, max_days, date_from, date_to)
+    return query_df(f'''
+        SELECT fp.PROJID, dm.municipality_name, c.canton_code AS Kanton, fp.applied_date,
+               fp.approved_date, fp.processing_days
+        FROM fact_project fp
+        LEFT JOIN dim_municipality dm ON dm.bfs_number=fp.BFS
+        LEFT JOIN dim_canton c ON c.canton_id=dm.canton_id
+        {joins}
+        {where}
+        ORDER BY fp.applied_date DESC
+        LIMIT ?
+    ''', params + [limit])
+
+def projects_count(canton_id=None, bfs=None, fsa_code=None, devtype_code=None, min_days=None, max_days=None,
+                    date_from=None, date_to=None):
+    joins, where, params = _projects_filter_clause(canton_id, bfs, fsa_code, devtype_code, min_days, max_days, date_from, date_to)
+    return query_df(f'''
+        SELECT count(*) n
+        FROM fact_project fp
+        LEFT JOIN dim_municipality dm ON dm.bfs_number=fp.BFS
+        LEFT JOIN dim_canton c ON c.canton_id=dm.canton_id
+        {joins}
+        {where}
+    ''', params).iloc[0]['n']
