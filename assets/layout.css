@@ -1,0 +1,117 @@
+/* Structural layout: fixed left sidebar + fluid content area.
+   Desktop-first — designed for 2560x1440, 3440x1440 and 4K. No mobile breakpoints,
+   no max-width cap: content intentionally fills ~90-95% of the viewport. */
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  min-width: 1280px;
+}
+
+.sidebar {
+  position: fixed;
+  top: 0; left: 0; bottom: 0;
+  width: var(--sidebar-width);
+  background: var(--sidebar-bg);
+  color: #FFFFFF;
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+  transition: width 0.18s ease;
+}
+
+/* pom+ logo, fixed top-right on every page */
+.pom-logo {
+  position: fixed;
+  top: 24px;
+  right: 32px;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pom-logo-text {
+  font-size: 1.1rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--navy);
+}
+.pom-logo-mark { width: 20px; height: 20px; }
+
+.brand-block {
+  position: relative;
+  padding: 18px 4px;
+  border-bottom: 1px solid rgba(255,255,255,0.12);
+  background: #000000;
+  text-align: center;
+}
+.brand-logo-full { display: block; width: 100%; max-width: 272px; height: auto; margin: 0 auto; }
+.brand-logo-icon { display: none; width: 40px; height: 40px; margin: 4px auto; }
+.sidebar-toggle {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: rgba(255,255,255,0.08);
+  border: none;
+  color: #FFFFFF;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  transition: transform 0.18s ease, background 0.15s ease;
+}
+.sidebar-toggle:hover { background: rgba(255,255,255,0.18); }
+
+/* ---- Collapsible sidebar: toggled via a class on <body> (persists across page
+   navigation since body isn't remounted by Dash's page router, unlike .app-shell) ---- */
+body.sidebar-collapsed .sidebar { width: 72px; }
+body.sidebar-collapsed .main-content { margin-left: 72px; }
+body.sidebar-collapsed .brand-block { padding: 14px 8px; }
+body.sidebar-collapsed .brand-logo-full { display: none; }
+body.sidebar-collapsed .brand-logo-icon { display: block; }
+body.sidebar-collapsed .sidebar-toggle { position: absolute; top: 14px; right: -13px; transform: rotate(180deg); }
+body.sidebar-collapsed .nav-label,
+body.sidebar-collapsed .sidebar-footer { display: none; }
+body.sidebar-collapsed .nav-link-inner { justify-content: center; padding: 11px 0; }
+body.sidebar-collapsed .nav-icon { width: auto; }
+
+.nav-links { flex: 1; padding: 20px 14px; display: flex; flex-direction: column; gap: 4px; }
+.nav-link-wrap { text-decoration: none; }
+.nav-link-inner {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 14px; border-radius: 8px;
+  color: rgba(255,255,255,0.78); font-weight: 500; font-size: 0.92rem;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.nav-link-inner:hover { background: rgba(255,255,255,0.08); color: #FFFFFF; }
+.nav-link-inner.active { background: var(--blue); color: #FFFFFF; }
+.nav-icon { width: 18px; text-align: center; opacity: 0.9; }
+
+.sidebar-footer { padding: 18px 28px 24px 28px; border-top: 1px solid rgba(255,255,255,0.12); }
+.sidebar-footer-title { font-size: 0.8rem; font-weight: 600; color: rgba(255,255,255,0.85); }
+.sidebar-footer-sub { font-size: 0.72rem; color: rgba(255,255,255,0.5); margin-top: 2px; }
+
+/* Main content: no max-width — fills the remaining viewport, gutter via % padding */
+.main-content {
+  margin-left: var(--sidebar-width);
+  flex: 1;
+  padding: 36px 5% 64px 5%;
+  width: 100%;
+  transition: margin-left 0.18s ease;
+}
+
+.page-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 28px; }
+.page-title { font-size: 1.8rem; font-weight: 700; color: var(--navy); margin: 0 0 6px 0; }
+.page-subtitle { font-size: 0.98rem; color: var(--text-muted); margin: 0; max-width: 900px; }
+.page-header-actions { display: flex; gap: 12px; align-items: center; }
+
+.page-body { display: flex; flex-direction: column; gap: 28px; }
+
+/* Grid helpers used across pages */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+.grid-6 { display: grid; grid-template-columns: repeat(6, 1fr); gap: 20px; }
+.grid-2-1 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 28px; }

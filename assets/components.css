@@ -1,0 +1,246 @@
+/* Component-level styling. No Bootstrap — plain divs styled directly. */
+
+/* ---- KPI cards ---- */
+.kpi-card {
+  background: var(--surface);
+  border-radius: 10px;
+  border-left: 5px solid var(--blue);
+  box-shadow: 0 2px 14px rgba(23,54,93,0.07);
+  padding: 20px 22px;
+}
+.kpi-accent-navy { border-left-color: var(--navy); }
+.kpi-accent-blue { border-left-color: var(--blue); }
+.kpi-accent-teal { border-left-color: var(--teal); }
+.kpi-accent-green { border-left-color: var(--green); }
+.kpi-accent-orange { border-left-color: var(--orange); }
+.kpi-accent-red { border-left-color: var(--red); }
+.kpi-title { color: var(--text-muted); font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.kpi-value { font-size: 2.4rem; font-weight: 800; color: var(--navy); line-height: 1.2; margin-top: 6px; }
+.kpi-subtitle { font-size: 0.82rem; color: var(--text-muted); margin-top: 4px; }
+
+/* ---- Section cards ---- */
+.section-card {
+  background: var(--surface);
+  border-radius: 10px;
+  box-shadow: 0 2px 14px rgba(23,54,93,0.06);
+  padding: 28px 32px;
+}
+.section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+.section-title { font-size: 1.05rem; font-weight: 700; color: var(--navy); margin: 0; }
+.section-actions { display: flex; gap: 10px; align-items: center; }
+
+/* ---- Status badges ---- */
+.status-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/* ---- Ampelsystem (traffic light) ---- */
+.traffic-light { display: inline-flex; align-items: center; gap: 8px; }
+.traffic-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.traffic-label { font-size: 0.85rem; color: var(--text-primary); font-weight: 500; }
+
+/* ---- Score bars (Gesamt/Prozess/Regulierung/Markt) ---- */
+.score-row { margin-bottom: 14px; }
+.score-row:last-child { margin-bottom: 0; }
+.score-row-header { display: flex; justify-content: space-between; margin-bottom: 6px; }
+.score-label { font-size: 0.85rem; color: var(--text-muted); font-weight: 600; }
+.score-value { font-size: 0.95rem; color: var(--navy); font-weight: 800; }
+.score-track { background: var(--border); border-radius: 6px; height: 8px; overflow: hidden; }
+.score-fill { height: 100%; border-radius: 6px; }
+.score-accent-navy { background: var(--navy); }
+.score-accent-blue { background: var(--blue); }
+.score-accent-teal { background: var(--teal); }
+.score-accent-green { background: var(--green); }
+.score-accent-orange { background: var(--orange); }
+
+/* ---- Header meta pills (Gemeinde / Kanton / Peergruppe / Ranking) ---- */
+.meta-pill-row { display: flex; gap: 32px; flex-wrap: wrap; }
+.meta-pill-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+.meta-pill-value { font-size: 1.15rem; color: var(--navy); font-weight: 700; margin-top: 2px; }
+
+/* ---- Empty state ---- */
+.empty-state {
+  background: #FFF7ED;
+  border: 1px solid var(--orange);
+  color: #7C3A0A;
+  border-radius: 8px;
+  padding: 14px 18px;
+  font-size: 0.9rem;
+}
+
+/* ---- Tables ---- */
+.dash-table-container { background: var(--surface); }
+
+/* ---- Buttons ---- */
+.btn-primary {
+  background: var(--blue);
+  color: #FFFFFF;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 20px;
+  font-family: var(--font-stack);
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.btn-primary:hover { background: var(--navy); }
+
+.btn-secondary {
+  background: transparent;
+  color: var(--navy);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 9px 18px;
+  font-family: var(--font-stack);
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.btn-secondary:hover { background: var(--background); border-color: var(--blue); }
+
+/* ---- Suggestion list (search autocomplete) ---- */
+.suggestion-list {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-top: 6px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.suggestion-item {
+  padding: 10px 14px;
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+.suggestion-item:last-child { border-bottom: none; }
+.suggestion-item:hover { background: var(--background); color: var(--blue); }
+.suggestion-item-muni { background: #F0F6FC; font-weight: 600; color: var(--navy); }
+.suggestion-item-muni:hover { background: #E4EFFA; color: var(--navy); }
+
+/* ---- Search result cards ---- */
+.search-result {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-top: 12px;
+}
+.search-result-label { font-size: 1rem; font-weight: 600; color: var(--navy); }
+.search-result-meta { font-size: 0.8rem; color: var(--text-muted); margin-top: 2px; }
+
+/* ---- Tabs ---- */
+.ris-tabs { border-bottom: 1px solid var(--border) !important; }
+.ris-tab {
+  font-family: var(--font-stack) !important;
+  font-size: 0.88rem !important;
+  color: var(--text-muted) !important;
+  border: none !important;
+  padding: 10px 4px !important;
+  margin-right: 24px !important;
+}
+.ris-tab--selected {
+  color: var(--navy) !important;
+  font-weight: 700 !important;
+  border-bottom: 2px solid var(--blue) !important;
+  box-shadow: none !important;
+}
+
+/* ---- Filters ---- */
+.filter-bar { display: flex; gap: 16px; align-items: center; margin-bottom: 4px; flex-wrap: wrap; }
+.filter-label { font-size: 0.78rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 4px; }
+.Select-control, .dash-dropdown .Select-control { border-radius: 6px !important; border-color: var(--border) !important; }
+
+/* dcc.DatePickerRange (react-dates) ships its own much larger default font - align it
+   with the neighboring filter inputs (dcc.Input/dcc.Dropdown use the app's base 15px/0.85rem). */
+.DateRangePickerInput {
+  border: 1px solid var(--border) !important;
+  border-radius: 6px !important;
+  overflow: hidden;
+}
+.DateInput { width: 100px !important; }
+.DateInput_input {
+  font-family: var(--font-stack) !important;
+  font-size: 0.85rem !important;
+  font-weight: 400 !important;
+  color: var(--text-primary) !important;
+  padding: 8px 10px !important;
+  line-height: 1.3 !important;
+}
+.DateInput_input__focused { border-bottom-color: var(--blue) !important; }
+.DateRangePickerInput_arrow_svg { width: 14px !important; height: 14px !important; fill: var(--text-muted) !important; }
+
+/* ---- Acquisition Decision Sheet (Permit Intelligence, illustrative report layout) ---- */
+.decision-sheet {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 32px 36px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.decision-header-overline {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.decision-header-title { font-size: 1.9rem; font-weight: 800; color: var(--navy); margin: 2px 0 4px 0; }
+.decision-subline { font-size: 0.92rem; font-weight: 700; color: var(--text-primary); }
+
+.decision-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.decision-verdict-box { background: var(--background); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; }
+.decision-verdict-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+.decision-verdict-col { display: flex; flex-direction: column; gap: 4px; }
+.decision-verdict-value { font-size: 1.9rem; font-weight: 800; color: var(--navy); line-height: 1.15; }
+.decision-verdict-caption { font-size: 0.82rem; color: var(--text-muted); }
+
+.decision-tile-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+.decision-tile { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; }
+.decision-tile-label { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--blue); margin-bottom: 6px; }
+.decision-tile-value { font-size: 1.5rem; font-weight: 800; color: var(--navy); }
+.decision-tile-caption { font-size: 0.78rem; font-style: italic; color: var(--text-muted); margin-top: 4px; }
+
+.decision-block { display: flex; flex-direction: column; }
+
+.decision-evidence-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.decision-evidence-table th {
+  text-align: left; font-size: 0.75rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.03em; color: var(--text-muted); padding: 8px 12px; border-bottom: 1px solid var(--border);
+}
+.decision-evidence-table td { padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--text-primary); }
+.decision-evidence-rowlabel { font-weight: 700; color: var(--navy); }
+.decision-evidence-table tr:last-child td { border-bottom: none; }
+
+.decision-risk-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.decision-risk-col { background: var(--background); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; }
+.decision-risk-title { font-size: 0.82rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 8px; }
+.decision-risk-title--good { color: var(--green); }
+.decision-risk-title--bad { color: var(--orange); }
+.decision-risk-item { font-size: 0.9rem; color: var(--text-primary); padding: 3px 0; }
+
+.decision-recommendation-box { border: 2px solid var(--navy); border-radius: 8px; padding: 18px 22px; }
+.decision-recommendation-title { font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--blue); margin-bottom: 8px; }
+.decision-recommendation-lead { font-size: 1rem; font-weight: 700; color: var(--navy); margin: 0 0 8px 0; }
+.decision-recommendation-body { font-size: 0.88rem; color: var(--text-primary); margin: 0; line-height: 1.5; }
+
+.decision-disclaimer { font-size: 0.76rem; font-style: italic; color: var(--text-muted); border-top: 1px solid var(--border); padding-top: 14px; }

@@ -1,0 +1,33 @@
+/* Design tokens for the RIS Analytics Platform. Corporate palette per pom+ brand spec. */
+:root {
+  --navy: #17365D;
+  --blue: #2F75B5;
+  --teal: #00A6A6;
+  --green: #70AD47;
+  --orange: #ED7D31;
+  --red: #C00000;
+
+  --background: #F4F7FA;
+  --surface: #FFFFFF;
+
+  --text-primary: #1F2937;
+  --text-muted: #6B7280;
+
+  --border: #E5E9F0;
+  --sidebar-width: 280px;
+  --sidebar-bg: #000000;
+  --font-stack: 'Inter', 'Segoe UI', Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text-primary);
+  font-family: var(--font-stack);
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4, h5 { font-family: var(--font-stack); color: var(--navy); }

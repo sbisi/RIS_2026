@@ -1,0 +1,1 @@
+{"version":"0.2.0","configurations":[{"name":"Dash: App starten","type":"debugpy","request":"launch","program":"${workspaceFolder}/app.py","console":"integratedTerminal","envFile":"${workspaceFolder}/.env"},{"name":"ETL: DuckDB aufbauen","type":"debugpy","request":"launch","module":"etl.build_database","console":"integratedTerminal","envFile":"${workspaceFolder}/.env"}]}
