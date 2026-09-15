@@ -10,6 +10,7 @@ EXPORT_DIR = BASE_DIR / 'exports'
 HOST = os.getenv('HSLU_HOST', '127.0.0.1')
 PORT = int(os.getenv('HSLU_PORT', '8050'))
 DEBUG = os.getenv('HSLU_DEBUG', 'true').lower() == 'true'
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 COLORS = {
     'navy': '#17365D', 'blue': '#2F75B5', 'teal': '#00A6A6', 'green': '#70AD47',
     'orange': '#ED7D31', 'red': '#C00000', 'background': '#F4F7FA', 'surface': '#FFFFFF',
@@ -28,6 +29,7 @@ STATUS_COLORS = {
 NAV_ITEMS = [
     {'label': 'Suche', 'href': '/suche', 'icon': '⌕'},
     {'label': 'Dashboard', 'href': '/', 'icon': '▤'},
+    {'label': 'Insights', 'href': '/chatbot', 'icon': '⁇'},
     {'label': 'Gemeinderanking', 'href': '/ranking', 'icon': '▲'},
     {'label': 'Gemeindeprofil', 'href': '/gemeinde', 'icon': '◉'},
     {'label': 'Reglementanalyse', 'href': '/regulierung', 'icon': '⚖'},
