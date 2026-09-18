@@ -148,21 +148,8 @@ def update_tab_content(active_tab, parcel_data):
         records = format_zone_parameters_table(row)
         cols = [{'name': c, 'id': c} for c in records[0].keys()]
 
-        area = parcel_data.get('area')
-        az_raw = row.get('ausnuetzungsziffer_standard_value')
-        az_value = parse_max_numeric(az_raw)
-        bgf_block = None
-        if area and az_value:
-            bgf_block = html.Div(
-                kpi('Potenziell bebaubare Fläche (BGF)', f'{area * az_value:,.0f} m²',
-                    f'Parzellenfläche {area:,.0f} m² × Ausnützungsziffer {az_value:g} (Standard, „{az_raw}“) '
-                    '– grobe Schätzung, ersetzt keine Bauberechnung', accent='teal'),
-                style={'maxWidth': '420px', 'marginBottom': '16px'},
-            )
-
         return html.Div([
             html.P(f"Zone: {row['zone_clean']} · Basis: {int(row['n_source_projects'])} Projekt(e)", className='kpi-subtitle', style={'marginBottom': '10px'}),
-            bgf_block,
             styled_table(records, cols, page_size=30, sort=True, filter_=False, style_data_conditional=[
                 {'if': {'filter_query': '{Bemerkung} = "nicht vorhanden"'}, 'color': COLORS['gray'], 'fontStyle': 'italic'},
             ]),
