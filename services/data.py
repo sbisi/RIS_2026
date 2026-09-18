@@ -1,3 +1,5 @@
+import pandas as pd
+
 from database.db import query_df, table_exists
 
 def metrics():
@@ -295,7 +297,6 @@ def model_table_counts():
         else:
             n = None
         rows.append({'Tabelle': name, 'Typ': kind, 'Zeilen': n})
-    import pandas as pd
     return pd.DataFrame(rows)
 
 SUSTAINABILITY_TOPICS_SUPPORT_RESTRICT = {
@@ -366,6 +367,125 @@ def municipality_benchmark(bfs):
         SELECT 'Schweiz (Median)', median(fr.overall_score), median(fm.median_duration)
         FROM fact_ranking fr LEFT JOIN fact_municipality fm ON fm.municipality_id=fr.municipality_id
     ''', [int(bfs)])
+
+def municipality_diagnosis(bfs):
+    """Einordnung/Priorisierung aus dem HSLU-Ranking (stg_ranking_ranking) - Pendant zur
+    'EINORDNUNG GEMEINDE X'-Box im Excel-Gemeindereport. rating_eligibility='DROP' bedeutet
+    zu wenig Projektdaten fuer ein Ranking (alle Scores dann NULL)."""
+    return query_df('''
+        SELECT rating_eligibility, rating_prozess, diagnose, prioritaet_partner,
+               peer_group, peer_group_size, rank_gesamt_peer, rank_gesamt_national,
+               national_percentile_gesamt
+        FROM stg_ranking_ranking WHERE BFS=?
+    ''', [int(bfs)])
+
+DIMENSION_RANK_ROWS = [
+    ('Prozess', 'score_prozess', 'rank_prozess_peer', 'national_percentile_prozess'),
+    ('Regulierung', 'score_reglement_complexity', 'rank_regulierung_peer', 'national_percentile_regulierung'),
+    ('Markt', 'score_markt', 'rank_markt_peer', 'national_percentile_markt'),
+    ('Gesamt', 'score_gesamt_weighted', 'rank_gesamt_peer', 'national_percentile_gesamt'),
+]
+
+def municipality_dimension_ranks(bfs):
+    """Score/Peer-Rang/Nat.-Perzentil je Dimension - Pendant zur 'PEER-VERGLEICH
+    (Raumtyp_Gemeindegrösse)'-Tabelle im Excel-Gemeindereport."""
+    row = query_df('''
+        SELECT peer_group_size, score_prozess, score_reglement_complexity, score_markt,
+               score_gesamt_weighted, rank_prozess_peer, rank_regulierung_peer, rank_markt_peer,
+               rank_gesamt_peer, national_percentile_prozess, national_percentile_regulierung,
+               national_percentile_markt, national_percentile_gesamt
+        FROM stg_ranking_ranking WHERE BFS=?
+    ''', [int(bfs)])
+    if row.empty:
+        return pd.DataFrame()
+    r = row.iloc[0]
+    return pd.DataFrame([{
+        'Dimension': label, 'Score': r[score_col], 'Peer_Rang': r[rank_col],
+        'Peer_Groesse': r['peer_group_size'], 'Nat_Perzentil': r[pct_col],
+    } for label, score_col, rank_col, pct_col in DIMENSION_RANK_ROWS])
+
+# stg_ranking_scores traegt bereits granulare 0-100-Scores pro Einzelmetrik (nicht nur die vier
+# Verbund-Scores in stg_ranking_ranking) - exakt die Quelle der beiden Radar-Charts im
+# Excel-Gemeindereport (Sheet DASHBOARD, Bereiche N1:P6 und T1:V7).
+OVERVIEW_RADAR_AXES = [
+    ('Prozess', 'score_prozess'), ('Dokumentalter', 'score_document_age_context'),
+    ('Intervention', 'score_intervention'), ('Regulierung', 'score_regulierung'),
+    ('Markt', 'score_markt'),
+]
+PROCESS_RADAR_AXES = [
+    ('Median Dauer', 'score_median_duration'), ('SD Dauer', 'score_sd_duration'),
+    ('> 180 Tage', 'score_share_gt_180'), ('> 365 Tage', 'score_share_gt_365'),
+    ('Unapproved 2J', 'score_unapproved_2y'), ('Unapproved 3J', 'score_unapproved_3y'),
+]
+
+def _score_radar(bfs, axes):
+    """Gemeinde- vs. Peer-Group-Durchschnitt (nur rating_eligibility='OK') ueber die gegebenen
+    0-100-Score-Spalten aus stg_ranking_scores, im Long-Format fuer den Radar-Chart."""
+    cols = ', '.join(col for _, col in axes)
+    row = query_df(f'SELECT peer_group, {cols} FROM stg_ranking_scores WHERE BFS=?', [int(bfs)])
+    if row.empty or not row.iloc[0]['peer_group']:
+        return pd.DataFrame(columns=['Achse', 'Wert', 'Serie'])
+    r = row.iloc[0]
+    peer_group = r['peer_group']
+    agg_cols = ', '.join(f'avg({col}) AS {col}' for _, col in axes)
+    peer = query_df(f"""
+        SELECT {agg_cols} FROM stg_ranking_scores
+        WHERE peer_group=? AND rating_eligibility='OK'
+    """, [peer_group]).iloc[0]
+
+    records = []
+    for label, col in axes:
+        records.append({'Achse': label, 'Wert': r[col], 'Serie': 'Gemeinde'})
+        records.append({'Achse': label, 'Wert': peer[col], 'Serie': f'Peer-Ø ({peer_group})'})
+    return pd.DataFrame(records)
+
+def municipality_overview_radar(bfs):
+    return _score_radar(bfs, OVERVIEW_RADAR_AXES)
+
+def municipality_process_radar(bfs):
+    return _score_radar(bfs, PROCESS_RADAR_AXES)
+
+PEER_BENCHMARK_METRICS = [
+    ('Median Bearbeitungsdauer', 'median_duration', 'Tage', 'Prozess'),
+    ('SD Bearbeitungsdauer', 'sd_duration', 'Tage', 'Prozess'),
+    ('Anteil > 180 Tage', 'share_gt_180', '%', 'Prozess'),
+    ('Anteil > 365 Tage', 'share_gt_365', '%', 'Prozess'),
+    ('Unentschieden nach 2 Jahren', 'share_unapproved_after_2y', '%', 'Prozess'),
+    ('Unentschieden nach 3 Jahren', 'share_unapproved_after_3y', '%', 'Prozess'),
+    ('Intervention Count', 'Intervention_count', 'Anzahl', 'Regulierung'),
+    ('Architektur Count', 'Architektur_count', 'Anzahl', 'Regulierung'),
+    ('Verdichtung Count', 'Verdichtung_count', 'Anzahl', 'Regulierung'),
+    ('Wohnen Count', 'Wohnen_count', 'Anzahl', 'Regulierung'),
+    ('Leerstandsquote', 'leerwohnungsquote_2024', '%', 'Markt'),
+    ('Ständige Bevölkerung', 'Staendige_Bevoelkerung_31_12_2024', 'Anzahl', 'Markt'),
+    ('MFH-Wachstum (CAGR 21-24)', 'wohnungen_mfh_cagr_2021_2024', '%', 'Markt'),
+]
+
+def municipality_peer_benchmark(bfs):
+    """Kennzahlen-Vergleich Gemeinde vs. Peer-Gruppen-Durchschnitt vs. nationaler Durchschnitt
+    (nur rating_eligibility='OK' fuer die Durchschnitte) - Pendant zur 'GEMEINDE X ZAHLEN'-Tabelle
+    im Excel-Gemeindereport. Rueckgabe: (DataFrame, peer_group_label)."""
+    cols = ', '.join(col for _, col, _, _ in PEER_BENCHMARK_METRICS)
+    row = query_df(f'SELECT peer_group, {cols} FROM stg_ranking_base WHERE BFS=?', [int(bfs)])
+    if row.empty or not row.iloc[0]['peer_group']:
+        return pd.DataFrame(), None
+    r = row.iloc[0]
+    peer_group = r['peer_group']
+
+    agg_cols = ', '.join(f'avg({col}) AS {col}' for _, col, _, _ in PEER_BENCHMARK_METRICS)
+    peer = query_df(f"""
+        SELECT {agg_cols} FROM stg_ranking_base
+        WHERE peer_group=? AND rating_eligibility='OK'
+    """, [peer_group]).iloc[0]
+    national = query_df(f"""
+        SELECT {agg_cols} FROM stg_ranking_base WHERE rating_eligibility='OK'
+    """).iloc[0]
+
+    records = [{
+        'Bereich': section, 'Dimension': label,
+        'Gemeinde': r[col], 'Peer_Oe': peer[col], 'Nat_Oe': national[col], 'Einheit': unit,
+    } for label, col, unit, section in PEER_BENCHMARK_METRICS]
+    return pd.DataFrame(records), peer_group
 
 def permit_duration_benchmark(bfs=None, canton_code=None):
     """Bearbeitungsdauer-Perzentile (Tage) auf drei Vergleichsebenen für den

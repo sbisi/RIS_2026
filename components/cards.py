@@ -22,8 +22,8 @@ def section_card(title, children, actions=None):
     ], className='section-card')
 
 
-def status_badge(status):
-    color = STATUS_COLORS.get(status, COLORS['gray'])
+def status_badge(status, color=None):
+    color = color or STATUS_COLORS.get(status, COLORS['gray'])
     return html.Span(status, className='status-badge', style={
         'backgroundColor': color + '1A', 'color': color, 'border': f'1px solid {color}',
     })

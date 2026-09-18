@@ -21,4 +21,7 @@ app.index_string = '''<!DOCTYPE html>
 app.layout = html.Div(page_container)
 server = app.server
 if __name__ == '__main__':
-    app.run(host=HOST, port=PORT, debug=DEBUG, threaded=True)
+    # use_reloader=False: der Werkzeug-Autoreloader (debug=True) beobachtet Datei-Timestamps und
+    # startet bei Aenderung neu - in diesem OneDrive-synchronisierten Ordner loest der Sync-Prozess
+    # das staendig aus (Endlos-Neustart-Schleife). Manuelles Neustarten nach Codeaenderungen noetig.
+    app.run(host=HOST, port=PORT, debug=DEBUG, threaded=True, use_reloader=False)

@@ -1,6 +1,8 @@
 """Parzellen- und Zonendetails zu einer Adresse: Geokodierung, amtliche Vermessung,
 Nutzungsplanung (geodienste.ch) mit Fallback auf die eidg. Bauzonen, eingebettete
 Katasterkarte (map.geo.admin.ch)."""
+import re
+
 import dash
 from dash import dcc, html, Input, Output, State, callback
 from urllib.parse import unquote
@@ -11,6 +13,7 @@ from services.geo import get_coordinates, get_parcel_data, get_zone_data, clean_
 from components.page_header import page_shell
 from components.cards import section_card, kpi
 from components.tables import styled_table
+from config.settings import COLORS
 
 dash.register_page(__name__, path='/suche/parzellen', name='Parzellen')
 
@@ -70,7 +73,12 @@ def get_zone_parameters(bfs, zone_candidates):
 
 def format_zone_parameters_table(row):
     """Baut die Anzeige-Tabelle (Parameter x Standard/Bonus/Arealüberbauung) aus einer
-    dim_zone_parameter-Zeile. Parameter ohne jeglichen Wert werden ausgeblendet."""
+    dim_zone_parameter-Zeile - alle 27 Parameter-Typen werden gezeigt, auch wenn für diese
+    konkrete Zone kein Wert erfasst ist (Spalte "Bemerkung": "nicht vorhanden"). Jede Zeile in
+    dim_zone_parameter ist bereits zonenspezifisch (Schlüssel BFS + Zone), d.h. die Werte
+    gelten exakt für die hier gematchte Zone - "nicht vorhanden" heisst nicht "Daten fehlen",
+    sondern dass das Reglement für diesen Parameter in dieser Zone schlicht kein Mass festlegt
+    (z.B. kein Waldabstand in einer nicht waldangrenzenden Zone)."""
     records = []
     for label, slug in ZONE_PARAM_TYPES:
         values = {}
@@ -80,9 +88,21 @@ def format_zone_parameters_table(row):
             values[variant_label] = val if val not in (None, '') else '–'
             if val not in (None, ''):
                 any_value = True
-        if any_value:
-            records.append({'Parameter': label, **values})
+        records.append({'Parameter': label, **values, 'Bemerkung': '' if any_value else 'nicht vorhanden'})
     return records
+
+
+def parse_max_numeric(value_str):
+    """Extrahiert die grösste Zahl aus einem Ausnützungsziffer-Text wie '≤0.8' oder
+    '0.45; ≤0.45' oder '1; ≤1.2'. Die Reglementstexte fassen teils mehrere bedingte Werte in
+    einem Feld zusammen (Grundwert + gedeckelter Ausnahmewert) - der grösste gefundene Wert
+    dient als optimistische Obergrenze für die Flächenschätzung, nicht als Garantie."""
+    if not value_str or value_str in ('–', ''):
+        return None
+    numbers = re.findall(r'\d+(?:[.,]\d+)?', value_str)
+    if not numbers:
+        return None
+    return max(float(n.replace(',', '.')) for n in numbers)
 
 
 def layout(query=None, **kwargs):
@@ -126,13 +146,26 @@ def update_tab_content(active_tab, parcel_data):
             zone_label = parcel_data.get('zone_kommunal') or parcel_data.get('zone_category') or 'unbekannte Zone'
             return html.P(f"Keine Zonenparameter für diese Gemeinde/Zone in data_hslu260312.csv gefunden ({zone_label}).")
         records = format_zone_parameters_table(row)
-        if not records:
-            return html.P(f"Zone „{row['zone_clean']}“ gefunden, aber keine numerischen Parameter erfasst "
-                           f"(z. B. Spezialzonen ohne Regelmass). Basis: {int(row['n_source_projects'])} Projekt(e).")
         cols = [{'name': c, 'id': c} for c in records[0].keys()]
+
+        area = parcel_data.get('area')
+        az_raw = row.get('ausnuetzungsziffer_standard_value')
+        az_value = parse_max_numeric(az_raw)
+        bgf_block = None
+        if area and az_value:
+            bgf_block = html.Div(
+                kpi('Potenziell bebaubare Fläche (BGF)', f'{area * az_value:,.0f} m²',
+                    f'Parzellenfläche {area:,.0f} m² × Ausnützungsziffer {az_value:g} (Standard, „{az_raw}“) '
+                    '– grobe Schätzung, ersetzt keine Bauberechnung', accent='teal'),
+                style={'maxWidth': '420px', 'marginBottom': '16px'},
+            )
+
         return html.Div([
             html.P(f"Zone: {row['zone_clean']} · Basis: {int(row['n_source_projects'])} Projekt(e)", className='kpi-subtitle', style={'marginBottom': '10px'}),
-            styled_table(records, cols, page_size=30, sort=True, filter_=False),
+            bgf_block,
+            styled_table(records, cols, page_size=30, sort=True, filter_=False, style_data_conditional=[
+                {'if': {'filter_query': '{Bemerkung} = "nicht vorhanden"'}, 'color': COLORS['gray'], 'fontStyle': 'italic'},
+            ]),
         ])
 
     if active_tab != 'tab-1':
@@ -196,10 +229,10 @@ def store_parcel_data(n_clicks, n_submit, clicked_coordinates, address):
         return dash.no_update, dash.no_update
     zone_info = get_zone_data(e, n)
     parcel_data = {'parcel_id': parcel_id, 'parcel_name': parcel_name, 'area': area, **zone_info}
-    return parcel_data, build_municipality_context(zone_info.get('bfs'))
+    return parcel_data, build_municipality_context(zone_info.get('bfs'), parcel_data)
 
 
-def build_municipality_context(bfs):
+def build_municipality_context(bfs, parcel_data=None):
     if not bfs:
         return None
     summary = municipality_summary(bfs)
@@ -208,6 +241,21 @@ def build_municipality_context(bfs):
     s = summary.iloc[0]
     docs = municipality_documents(bfs)
     sustainability = municipality_sustainability(bfs)
+
+    parcel_kpis = None
+    if parcel_data:
+        area = parcel_data.get('area')
+        candidates = [parcel_data.get('zone_kommunal'), parcel_data.get('zone_detail'), parcel_data.get('zone_category')]
+        zone_row = get_zone_parameters(bfs, candidates)
+        az_raw = zone_row.get('ausnuetzungsziffer_standard_value') if zone_row else None
+        az_value = parse_max_numeric(az_raw)
+        parcel_kpis = html.Div([
+            kpi('Parzellenfläche', f'{area:,.0f} m²' if area else '–', accent='navy'),
+            kpi('Ausnützungsziffer (Standard)', f'{az_value:g}' if az_value else '–',
+                f'„{az_raw}“' if az_raw and az_raw != '–' else 'für diese Zone nicht erfasst', accent='blue'),
+            kpi('Potenziell bebaubare Fläche (BGF)', f'{area * az_value:,.0f} m²' if area and az_value else '–',
+                'Parzellenfläche × Ausnützungsziffer – grobe Schätzung' if area and az_value else '', accent='teal'),
+        ], className='grid-3', style={'marginBottom': '20px'})
 
     kpis = html.Div([
         kpi('Gesamt-Score', f"{s.overall_score:.1f}" if s.overall_score == s.overall_score else '–', accent='navy'),
@@ -231,6 +279,7 @@ def build_municipality_context(bfs):
         tags = [html.P('Keine Förder-/Einschränkungshinweise erfasst.', className='kpi-subtitle')]
 
     return section_card(f"Gemeinde-Kontext: {s.municipality_name} ({s.Kanton})", [
+        parcel_kpis,
         kpis,
         html.Div([
             html.Div([html.H4('Reglement', style={'fontSize': '0.9rem', 'marginBottom': '8px'})] +

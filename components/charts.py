@@ -43,6 +43,19 @@ def line(df, x, y, color=None, labels=None, **kwargs):
     return px.line(df, x=x, y=y, color=color, labels=labels or {}, **kwargs)
 
 
+def radar(df, r, theta, color, labels=None, range_r=(0, 100), height=315, **kwargs):
+    """Radar/Spider-Chart (z.B. Gemeinde vs. Peer-Durchschnitt ueber mehrere Scores) als reine
+    Umriss-Linien ohne Flaechenfuellung - eine gefuellte Flaeche fuer nur eine Serie (z.B. nur
+    Peer-Durchschnitt, wenn die Gemeinde selbst nicht gerankt ist) sieht wie ein eigenes Scoring
+    der Gemeinde aus, ist es aber nicht. Erwartet Long-Format: eine Zeile pro (Achse, Serie).
+    height=315 (~30% kleiner als der Plotly-Default von 450)."""
+    fig = px.line_polar(df, r=r, theta=theta, color=color, line_close=True, labels=labels or {},
+                         height=height, **kwargs)
+    fig.update_traces(fill='none')
+    fig.update_layout(polar=dict(radialaxis=dict(range=list(range_r), gridcolor='#E5E9F0')))
+    return fig
+
+
 def swiss_map(df, lat='Latitude', lon='Longitude', color=None, size=None, hover_name=None,
               color_continuous_scale=None):
     fig = px.scatter_map(
