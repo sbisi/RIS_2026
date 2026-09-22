@@ -256,11 +256,23 @@
 .decision-verdict-value { font-size: 1.9rem; font-weight: 800; color: var(--navy); line-height: 1.15; }
 .decision-verdict-caption { font-size: 0.82rem; color: var(--text-muted); }
 
-.decision-tile-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+/* auto-fit statt fixem repeat(4,...) - damit eine 5. Kachel (z.B. P75-Exposure) sauber
+   umbricht statt die bestehenden 4 Spalten zu stauchen. */
+.decision-tile-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
 .decision-tile { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; }
 .decision-tile-label { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--blue); margin-bottom: 6px; }
 .decision-tile-value { font-size: 1.5rem; font-weight: 800; color: var(--navy); }
 .decision-tile-caption { font-size: 0.78rem; font-style: italic; color: var(--text-muted); margin-top: 4px; }
+
+/* Kacheln, die (teilweise) auf einer Nutzer-Annahme statt reinen RIS-Daten beruhen
+   (Investitionsvolumen, Current-Underwriting-Annahme, Carry-Satz) - gestrichelter Rahmen
+   plus Badge, damit auf einen Blick klar ist, was berechnet und was angenommen ist. */
+.decision-tile--assumption { border-style: dashed; border-color: var(--orange); }
+.decision-badge-assumption {
+  display: inline-block; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.03em;
+  color: var(--orange); background: rgba(237, 125, 49, 0.12); border: 1px solid var(--orange);
+  border-radius: 4px; padding: 1px 6px; margin-left: 6px; text-transform: uppercase; vertical-align: middle;
+}
 
 .decision-block { display: flex; flex-direction: column; }
 
@@ -272,6 +284,7 @@
 .decision-evidence-table td { padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--text-primary); }
 .decision-evidence-rowlabel { font-weight: 700; color: var(--navy); }
 .decision-evidence-table tr:last-child td { border-bottom: none; }
+.decision-evidence-lowsample-note { font-size: 0.72rem; color: var(--orange); margin-left: 6px; }
 
 .decision-risk-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
 .decision-risk-col { background: var(--background); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; }
@@ -286,3 +299,13 @@
 .decision-recommendation-body { font-size: 0.88rem; color: var(--text-primary); margin: 0; line-height: 1.5; }
 
 .decision-disclaimer { font-size: 0.76rem; font-style: italic; color: var(--text-muted); border-top: 1px solid var(--border); padding-top: 14px; }
+
+/* Generischer Warnhinweis-Kasten für Datenqualitäts-Einschränkungen (z.B. unverifizierte
+   Crawler-Treffer) - dezent amber statt rot, da kein Fehler sondern eine methodische Grenze. */
+.data-quality-notice {
+  background: rgba(237, 125, 49, 0.08); border: 1px solid var(--orange); border-radius: 8px;
+  padding: 14px 18px; font-size: 0.85rem; color: var(--text-primary); line-height: 1.5;
+}
+.data-quality-notice-title { font-weight: 700; color: var(--orange); margin-bottom: 6px; text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.04em; }
+.data-quality-notice ul { margin: 6px 0 0 0; padding-left: 20px; }
+.data-quality-notice li { margin-bottom: 4px; }

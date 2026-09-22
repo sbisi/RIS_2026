@@ -14,7 +14,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from pyproj import Transformer
-from shapely.geometry import shape
+from shapely.geometry import shape, Point
+
+from services.geo_zh import get_zh_zone_info
 
 logger = logging.getLogger(__name__)
 
@@ -168,10 +170,13 @@ def get_overlay_data_from_geodienste(e, n):
     lon, lat = convert_coordinates(e, n, 'EPSG:2056', 'EPSG:4326')
     delta = 0.002
     minx, miny, maxx, maxy = lon - delta, lat - delta, lon + delta, lat + delta
+    # Collection-Namen bei geodienste.ch umbenannt (verifiziert gegen die aktuelle Collection-
+    # Liste) - die alten Namen ('..._flaeche'/'_linie'/'_punkt') gaben nur noch 404 zurück, wurden
+    # vom try/except stillschweigend abgefangen (Überlagerungen erschienen dadurch immer leer).
     collections = [
-        'ueberlagernde_nutzungsplaninhalte_flaeche',
-        'ueberlagernde_nutzungsplaninhalte_linie',
-        'ueberlagernde_nutzungsplaninhalte_punkt',
+        'ueberlagernde_nutzungsplaninhalte_flaechenbezogene_festlegungen',
+        'ueberlagernde_nutzungsplaninhalte_linienbezogene_festlegungen',
+        'ueberlagernde_nutzungsplaninhalte_punktbezogene_festlegungen',
     ]
     # Die 3 Collections sind unabhängig voneinander - parallel statt sequenziell abfragen,
     # damit ein einzelner langsamer/zeitüberschreitender Call nicht die anderen blockiert
@@ -191,21 +196,63 @@ def get_overlay_data_from_geodienste(e, n):
 
 
 def get_zone_data_from_geodienste(e, n):
+    """Fragt geodienste.ch (föderales Nutzungsplanungs-Harmonisierungsmodell) für die exakte
+    kommunale/kantonale Zonenbezeichnung ab.
+
+    WICHTIG: der 'bbox'-Parameter dieser OGC-API filtert EMPIRISCH NICHT präzise nach Geometrie -
+    verifiziert an einer echten Testadresse (Windisch AG): unabhängig von Bbox-Grösse (±220m bis
+    ±30m) und CRS-Kombination kamen exakt dieselben, teils >1km entfernten Treffer zurück (u.a.
+    Wald-Flächen mehrere km entfernt), numberMatched blieb im vierstelligen Bereich (~1855) - die
+    API liefert offenbar grob nach einem Index-/Tile-Raster statt nach echter Bbox-Intersektion.
+    Die alte Logik ("erstes Feature mit einer Bezeichnung") wählte dadurch de facto eine
+    ZUFÄLLIGE Zone aus der Trefferliste, nicht die tatsächlich am Punkt gültige - konkret wurde
+    für die Testadresse "Wohnzone 3" gemeldet, während die per Punkt-in-Polygon-Check (gegen ALLE
+    1855 Treffer) tatsächlich zutreffende Zone "Wohnzone 2" war.
+
+    Fix: grosszügig abfragen (limit=2000, mehr schafft die API bei diesem Kollektionstyp i.d.R.
+    nicht an einem Ort) und die den Punkt TATSÄCHLICH enthaltende Zone per shapely bestimmen -
+    exakt das Muster, das get_zh_zone_info() für den Kanton ZH schon nutzt. Falls trotzdem keine
+    der geladenen Kandidaten den Punkt exakt enthält (z.B. bei einer noch grösseren Trefferzahl
+    als das Limit), wird als bestmögliche Näherung die geometrisch nächstgelegene Zone mit einer
+    Bezeichnung verwendet (klar als solche geloggt) statt einer positionsbedingt zufälligen."""
     url = 'https://www.geodienste.ch/db/npl_nutzungsplanung_v1_2_0/deu/ogcapi/collections/grundnutzung/items'
     lon, lat = convert_coordinates(e, n, 'EPSG:2056', 'EPSG:4326')
     delta = 0.002
     minx, miny, maxx, maxy = lon - delta, lat - delta, lon + delta, lat + delta
-    params = {'f': 'json', 'bbox': f'{minx},{miny},{maxx},{maxy}', 'limit': 50, 'crs': GEODIENSTE_CRS}
+    params = {'f': 'json', 'bbox': f'{minx},{miny},{maxx},{maxy}', 'limit': 2000, 'crs': GEODIENSTE_CRS}
     try:
         response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
-        features = response.json().get('features', [])
+        data = response.json()
+        features = data.get('features', [])
         if not features:
             logger.warning('get_zone_data_from_geodienste: keine Nutzungsplan-Features an e=%s n=%s', e, n)
             return None
-        props = next((f.get('properties', {}) for f in features
-                      if f.get('properties', {}).get('typ_kommunal_bezeichnung')
-                      or f.get('properties', {}).get('typ_kantonal_bezeichnung')), features[0].get('properties', {}))
+
+        point = Point(e, n)
+        props = None
+        for feature in features:
+            try:
+                geom = shape(feature['geometry'])
+            except Exception:
+                continue
+            if geom.covers(point):
+                props = feature.get('properties', {})
+                break
+
+        if props is None:
+            logger.warning(
+                'get_zone_data_from_geodienste: kein Feature enthält den Punkt e=%s n=%s exakt '
+                '(%d Kandidaten geprüft, numberMatched=%s) - verwende nächstgelegenes Feature als Näherung.',
+                e, n, len(features), data.get('numberMatched'),
+            )
+            labeled = [f for f in features if f.get('properties', {}).get('typ_kommunal_bezeichnung')
+                       or f.get('properties', {}).get('typ_kantonal_bezeichnung')] or features
+            try:
+                best = min(labeled, key=lambda f: shape(f['geometry']).distance(point))
+                props = best.get('properties', {})
+            except Exception:
+                props = features[0].get('properties', {})
 
         kantonal_zone = props.get('typ_kantonal_bezeichnung')
         kommunal_zone = props.get('typ_kommunal_bezeichnung')
@@ -250,6 +297,23 @@ def get_zone_data(e, n):
         detailed_result['bfs'] = bfs
         detailed_result['overlays'] = overlays
         return detailed_result
+
+    # geodienste.ch (Bund) führt für gewisse Kantone keine Nutzungsplanungsdaten - sie liefern
+    # nicht in das föderale Harmonisierungsmodell ein und betreiben stattdessen ein eigenes
+    # Geoportal. Kantonsspezifischer Fallback für die exakte Zonenbezeichnung, bevor wir auf die
+    # nicht-matchbare grobe eidg. Bauzonenkategorie zurückfallen. Bisher nur ZH; siehe
+    # services/geo_zh.py für den Hintergrund und geeignete Erweiterung um weitere Kantone (u.a.
+    # VD, TI sind ebenfalls betroffen, deren kantonale Geoportale sind noch nicht angebunden).
+    if canton == 'ZH':
+        zh = get_zh_zone_info(e, n)
+        if zh and zh.get('zone_name'):
+            return {
+                'canton': canton, 'bfs': bfs, 'zone_detail': zh['zone_name'],
+                'zone_category': bauzonen.get('zone_category', 'Keine Zone gefunden'),
+                'zone_kantonal': zh.get('canton_zone_category'), 'zone_kommunal': zh['zone_name'],
+                'legal_status': zh.get('legal_status'), 'published_from': zh.get('published_from'),
+                'documents': [], 'overlays': overlays, 'zone_source': 'Kanton ZH Geoportal (maps.zh.ch)',
+            }
 
     return {
         'canton': canton, 'bfs': bfs, 'zone_detail': None,

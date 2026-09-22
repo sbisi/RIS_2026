@@ -73,11 +73,13 @@ body.sidebar-collapsed .brand-logo-full { display: none; }
 body.sidebar-collapsed .brand-logo-icon { display: block; }
 body.sidebar-collapsed .sidebar-toggle { position: absolute; top: 14px; right: -13px; transform: rotate(180deg); }
 body.sidebar-collapsed .nav-label,
+body.sidebar-collapsed .nav-section-label,
 body.sidebar-collapsed .sidebar-footer { display: none; }
 body.sidebar-collapsed .nav-link-inner { justify-content: center; padding: 11px 0; }
 body.sidebar-collapsed .nav-icon { width: auto; }
+body.sidebar-collapsed .nav-search-block { padding-bottom: 10px; margin-bottom: 10px; }
 
-.nav-links { flex: 1; padding: 20px 14px; display: flex; flex-direction: column; gap: 4px; }
+.nav-links { flex: 1; padding: 20px 14px; display: flex; flex-direction: column; }
 .nav-link-wrap { text-decoration: none; }
 .nav-link-inner {
   display: flex; align-items: center; gap: 12px;
@@ -88,6 +90,21 @@ body.sidebar-collapsed .nav-icon { width: auto; }
 .nav-link-inner:hover { background: rgba(255,255,255,0.08); color: #FFFFFF; }
 .nav-link-inner.active { background: var(--blue); color: #FFFFFF; }
 .nav-icon { width: 18px; text-align: center; opacity: 0.9; }
+
+/* Suche: eigener, hervorgehobener Block als primärer Einstiegspunkt vor den
+   gruppierten Nav-Sections - farblich abgesetzt (Marken-Teal statt neutralem Weiss)
+   und per Trennlinie vom Rest der Navigation abgegrenzt. */
+.nav-search-block { padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,0.12); }
+.nav-search-block .nav-link-inner { color: var(--teal); font-weight: 600; }
+.nav-search-block .nav-link-inner:hover { background: rgba(0,166,166,0.16); color: #FFFFFF; }
+.nav-search-block .nav-link-inner.active { background: var(--teal); color: #FFFFFF; }
+
+.nav-group { display: flex; flex-direction: column; gap: 4px; margin-bottom: 20px; }
+.nav-group:last-child { margin-bottom: 0; }
+.nav-section-label {
+  font-size: 0.68rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;
+  color: rgba(255,255,255,0.38); padding: 0 14px; margin-bottom: 4px;
+}
 
 .sidebar-footer { padding: 18px 28px 24px 28px; border-top: 1px solid rgba(255,255,255,0.12); }
 .sidebar-footer-title { font-size: 0.8rem; font-weight: 600; color: rgba(255,255,255,0.85); }
@@ -103,11 +120,40 @@ body.sidebar-collapsed .nav-icon { width: auto; }
 }
 
 .page-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 28px; }
+.page-back-link {
+  display: inline-block; font-size: 0.85rem; font-weight: 600; color: var(--blue);
+  text-decoration: none; margin-bottom: 8px;
+}
+.page-back-link:hover { text-decoration: underline; }
 .page-title { font-size: 1.8rem; font-weight: 700; color: var(--navy); margin: 0 0 6px 0; }
 .page-subtitle { font-size: 0.98rem; color: var(--text-muted); margin: 0; max-width: 900px; }
 .page-header-actions { display: flex; gap: 12px; align-items: center; }
 
 .page-body { display: flex; flex-direction: column; gap: 28px; }
+
+/* Google-artige zentrierte Suche: Suchfeld mittig im verbleibenden Viewport (rechts von der
+   Sidebar), statt oben links wie der Rest der App. position:fixed + transform statt einer
+   Flex-Höhenkette über .main-content/.page-body hinweg, da deren tatsächliche Höhe vom Inhalt
+   anderer Seiten abhängt und eine reine min-height/justify-content-Lösung das Feld nur
+   innerhalb einer eigenen Box statt im ganzen Viewport zentriert hätte. Der linke Versatz
+   (var(--sidebar-width)/2) rechnet die Sidebarbreite heraus, damit "Mitte" die Mitte des
+   sichtbaren Inhaltsbereichs meint, nicht die Mitte des gesamten Fensters inkl. Sidebar;
+   max-height/overflow als Sicherheitsnetz, falls Vorschläge/Ergebnisse den Platz sprengen. */
+.search-centered {
+  position: fixed;
+  top: 50%;
+  left: calc(50% + (var(--sidebar-width) / 2));
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(700px, 88vw);
+  max-height: 85vh;
+  overflow-y: auto;
+  z-index: 5;
+  transition: left 0.18s ease;
+}
+body.sidebar-collapsed .search-centered { left: calc(50% + 36px); }
 
 /* Grid helpers used across pages */
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }

@@ -490,6 +490,17 @@ def build_fact_regulation(con):
           r.Architektur_count AS architecture_count,
           r.Wohnen_count AS housing_count,
           r.Verdichtung_count AS densification_count,
+          -- Sub-Kategorien (Stichwort-Häufigkeiten im Reglementstext, siehe RIS_Data
+          -- Dictionary_260910.docx) - summieren sich exakt zu Verdichtung_count/Wohnen_count,
+          -- bisher ungenutzt im Modell, jetzt für die Detailaufschlüsselung pro Gemeinde ergänzt.
+          r.Verdichtung_leitbild_count AS densification_leitbild_count,
+          r.Verdichtung_aktivierung_count AS densification_aktivierung_count,
+          r.Verdichtung_mindest_count AS densification_mindest_count,
+          r.Verdichtung_bonus_count AS densification_bonus_count,
+          r.Verdichtung_auflagen_count AS densification_auflagen_count,
+          r.Wohnen_bezahlbarkeit_count AS housing_bezahlbarkeit_count,
+          r.Wohnen_nutzung_count AS housing_nutzung_count,
+          r.Wohnen_erschliessung_count AS housing_erschliessung_count,
           r.document_age_2024 AS document_age
         FROM dim_municipality m
         LEFT JOIN stg_ranking_base r ON r.BFS = m.bfs_number

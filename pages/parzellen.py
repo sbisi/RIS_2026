@@ -14,8 +14,10 @@ from components.page_header import page_shell
 from components.cards import section_card, kpi
 from components.tables import styled_table
 from config.settings import COLORS
+from services.zone_params import ZONE_PARAM_TYPES, ZONE_PARAM_VARIANTS
+from services.bzo_results import bzo_documents_for_bfs
 
-dash.register_page(__name__, path='/suche/parzellen', name='Parzellen')
+dash.register_page(__name__, path='/suche/parzellen', name='Analyse Parzellen')
 
 
 def info_row(label, value):
@@ -23,27 +25,6 @@ def info_row(label, value):
         html.Div(label, className='score-label'),
         html.Div(value, style={'color': 'var(--text-primary)', 'fontSize': '0.92rem', 'marginTop': '2px', 'wordBreak': 'break-word'}),
     ], style={'marginBottom': '14px'})
-
-
-# Die 27 Zonenparameter-Typen aus data_hslu260312.csv, wie in
-# etl/build_zone_parameters.py extrahiert (Anzeigename -> Spalten-Slug-Präfix).
-ZONE_PARAM_TYPES = [
-    ('Abstand Strasse', 'abstand_strasse'), ('Ausnützungsziffer', 'ausnuetzungsziffer'),
-    ('Bachabstand', 'bachabstand'), ('Baumassenziffer', 'baumassenziffer'),
-    ('Bonus Ausnützung', 'bonus_ausnuetzung'), ('Fassadenhöhe', 'fassadenhoehe'),
-    ('Fassadenhöhe (giebelseitig)', 'fassadenhoehe_giebelseitig'),
-    ('Fassadenhöhe (traufseitig)', 'fassadenhoehe_traufseitig'), ('Firsthöhe', 'firsthoehe'),
-    ('Freiflächenziffer', 'freiflaechenziffer'), ('Fussgängerwege-Abstand', 'fussgaengerwege_abstand'),
-    ('Gebäudeabstand', 'gebaeudeabstand'), ('Gebäudebreite', 'gebaeudebreite'),
-    ('Gebäudehöhe', 'gebaeudehoehe'), ('Gebäudelänge', 'gebaeudelaenge'),
-    ('Gesamtausnützung', 'gesamtausnuetzung'), ('Geschossflächenziffer', 'geschossflaechenziffer'),
-    ('Geschosse', 'geschosse'), ('Gestaltungsplanbonus', 'gestaltungsplanbonus'),
-    ('grosser Grenzabstand', 'grosser_grenzabstand'), ('kleiner Grenzabstand', 'kleiner_grenzabstand'),
-    ('Grenzabstand', 'grenzabstand'), ('Mehrhöhenzuschlag', 'mehrhoehenzuschlag'),
-    ('Mehrlängenzuschlag', 'mehrlaengenzuschlag'), ('Überbauungsziffer', 'ueberbauungsziffer'),
-    ('Untergeschosse', 'untergeschosse'), ('Waldabstand', 'waldabstand'), ('Wohnanteil', 'wohnanteil'),
-]
-ZONE_PARAM_VARIANTS = [('standard', 'Standard'), ('bonus', 'Bonus'), ('arealueberbauung', 'Arealüberbauung')]
 
 
 def get_zone_parameters(bfs, zone_candidates):
@@ -113,7 +94,7 @@ def layout(query=None, **kwargs):
     # Adressfelds löst 'store_parcel_data'/'update_map' beim ersten Rendern ganz natürlich aus
     # (Dash führt jeden Callback einmal mit den initialen Prop-Werten aus).
     initial_address = clean_address(unquote(query)) if query else ''
-    return page_shell('/suche/parzellen', 'Parzellen', 'Parzellenfläche, Nutzungszone und Reglementsstatus zu einer Adresse.', [
+    return page_shell('/suche/parzellen', 'Analyse Parzellen', 'Parzellenfläche, Nutzungszone und Reglementsstatus zu einer Adresse.', [
         dcc.Store(id='parcel_data_store', data={}),
         dcc.Store(id='clicked_coordinates', data={}),
         html.Div([
@@ -127,6 +108,7 @@ def layout(query=None, **kwargs):
                 dcc.Tabs(id='tabs', value='tab-1', children=[
                     dcc.Tab(label='Stammdaten', value='tab-1', className='ris-tab', selected_className='ris-tab--selected'),
                     dcc.Tab(label='Parameter', value='tab-2', className='ris-tab', selected_className='ris-tab--selected'),
+                    dcc.Tab(label='Reglemente', value='tab-3', className='ris-tab', selected_className='ris-tab--selected'),
                 ], className='ris-tabs'),
                 html.Div(id='tab-content', style={'marginTop': '16px'}),
             ]),
@@ -152,6 +134,23 @@ def update_tab_content(active_tab, parcel_data):
             html.P(f"Zone: {row['zone_clean']} · Basis: {int(row['n_source_projects'])} Projekt(e)", className='kpi-subtitle', style={'marginBottom': '10px'}),
             styled_table(records, cols, page_size=30, sort=True, filter_=False, style_data_conditional=[
                 {'if': {'filter_query': '{Bemerkung} = "nicht vorhanden"'}, 'color': COLORS['gray'], 'fontStyle': 'italic'},
+            ]),
+        ])
+
+    if active_tab == 'tab-3':
+        if not parcel_data:
+            return html.P('bitte Parzelle wählen')
+        docs = bzo_documents_for_bfs(parcel_data.get('bfs'))
+        if not docs:
+            return html.P('Keine vom BZO-Crawler gefundenen Reglemente für diese Gemeinde.', className='kpi-subtitle')
+        return html.Div([
+            html.P('Unverifizierte Suchmaschinen-Treffer des BZO-Crawlers (scripts/bzo_crawler.py) - vor '
+                   'Übernahme manuell prüfen, siehe "Update Reglemente"/"Scrawling Reglemente" im Menü.',
+                   className='kpi-subtitle', style={'marginBottom': '10px'}),
+            html.Div([
+                html.A(doc['title'], href=doc['url'], target='_blank',
+                       style={'display': 'block', 'marginBottom': '6px', 'color': 'var(--blue)'})
+                for doc in docs
             ]),
         ])
 
@@ -271,7 +270,7 @@ def build_municipality_context(bfs, parcel_data=None):
         html.Div([
             html.Div([html.H4('Reglement', style={'fontSize': '0.9rem', 'marginBottom': '8px'})] +
                      (doc_links or [html.P('Kein Reglement erfasst.', className='kpi-subtitle')]) +
-                     [dcc.Link('Gemeindeprofil ansehen →', href=f'/gemeinde?bfs={int(bfs)}', className='btn-primary',
+                     [dcc.Link('Analyse Gemeinden ansehen →', href=f'/gemeinde?bfs={int(bfs)}', className='btn-primary',
                                style={'textDecoration': 'none', 'display': 'inline-block', 'marginTop': '10px'})]),
             html.Div([html.H4('Nachhaltigkeit (Reglement)', style={'fontSize': '0.9rem', 'marginBottom': '8px'})] + tags),
         ], className='grid-2', style={'marginTop': '20px'}),

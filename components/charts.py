@@ -13,7 +13,11 @@ BAR_ROW_PX = 32
 BAR_MARGIN_PX = 90
 
 
-def bar(df, x, y, orientation='h', color=None, color_map=None, labels=None, **kwargs):
+def bar(df, x, y, orientation='h', color=None, color_map=None, labels=None, height=None, **kwargs):
+    """height: optionale feste Höhe (px), überschreibt die automatische Pro-Kategorie-Formel.
+    Für sehr kleine Mehrfach-Charts (z.B. 3-5 Kategorien in einer schmalen Halbspalte) sorgt die
+    automatische Formel wegen ihrer Mindesthöhe (220px, gedacht für normal breite Einzelcharts)
+    sonst für unproportional dicke Balken - dort lieber eine kleinere feste Höhe übergeben."""
     fig = px.bar(df, x=x, y=y, orientation=orientation, color=color,
                  color_discrete_map=color_map, labels=labels or {}, **kwargs)
     if orientation == 'h':
@@ -23,8 +27,16 @@ def bar(df, x, y, orientation='h', color=None, color_map=None, labels=None, **kw
         # Abstand zwischen den Labels und dem Balkenbeginn.
         fig.update_layout(
             yaxis={'categoryorder': 'total ascending', 'automargin': True, 'ticklabelstandoff': 10},
-            height=max(220, len(df) * BAR_ROW_PX + BAR_MARGIN_PX),
+            height=height if height is not None else max(220, len(df) * BAR_ROW_PX + BAR_MARGIN_PX),
         )
+    return fig
+
+
+def with_definition_hover(fig):
+    """Für horizontale bar()-Charts, deren Dataframe eine 'Definition'-Spalte hat (via
+    hover_data=['Definition'] an bar() übergeben): zeigt beim Mouseover zusätzlich zu
+    Kategorie/Wert die Definition an, statt des generischen Plotly-Default-Hovertexts."""
+    fig.update_traces(hovertemplate='<b>%{y}</b>: %{x}<br><br>%{customdata[0]}<extra></extra>')
     return fig
 
 

@@ -11,7 +11,7 @@ from components.tables import styled_table
 from components.charts import bar, CHART_CONFIG
 from config.settings import COLORS
 
-dash.register_page(__name__, path='/Baugesuche', name='Baugesuche')
+dash.register_page(__name__, path='/Baugesuche', name='Analyse Baugesuche')
 
 TABLE_COLS = [
     {'name': 'PROJID', 'id': 'PROJID', 'type': 'numeric'},
@@ -56,7 +56,7 @@ def layout():
             reset_button('bp-reset'),
         )
 
-        return page_shell('/Baugesuche', 'Baugesuche', 'Explorative Analyse der Baugesuchsdaten nach Gebäudefunktion und Baumassnahmenart.', [
+        return page_shell('/Baugesuche', 'Analyse Baugesuche', 'Explorative Analyse der Baugesuchsdaten nach Gebäudefunktion und Baumassnahmenart.', [
             kpis,
             html.Div([
                 section_card('Gebäudefunktionen (FSA)', dcc.Graph(figure=fig_fsa, config=CHART_CONFIG)),
@@ -69,7 +69,7 @@ def layout():
             ]),
         ])
     except Exception as e:
-        return page_shell('/Baugesuche', 'Baugesuche', '', empty_state(str(e)))
+        return page_shell('/Baugesuche', 'Analyse Baugesuche', '', empty_state(str(e)))
 
 
 @callback(

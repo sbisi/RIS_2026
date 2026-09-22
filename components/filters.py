@@ -9,12 +9,13 @@ def canton_dropdown(id_, cantons_df, placeholder='Alle Kantone', width='320px'):
     ])
 
 
-def dropdown_filter(id_, label, options, placeholder='Alle', width='260px'):
+def dropdown_filter(id_, label, options, placeholder='Alle', width='260px', value=None):
     """Generischer Label+Dropdown-Filter (z.B. Gebäudefunktion, Baumassnahmenart) -
-    `options` bereits als [{'label':..., 'value':...}, ...]."""
+    `options` bereits als [{'label':..., 'value':...}, ...]. `value` erlaubt eine initiale
+    Vorauswahl (z.B. Deep-Link von einer anderen Seite mit ?bfs=...)."""
     return html.Div([
         html.Div(label, className='filter-label'),
-        dcc.Dropdown(id=id_, options=options, placeholder=placeholder, style={'width': width}),
+        dcc.Dropdown(id=id_, options=options, placeholder=placeholder, value=value, style={'width': width}),
     ])
 
 

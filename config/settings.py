@@ -26,17 +26,31 @@ STATUS_COLORS = {
     'MUNICIPALITY_MISMATCH': COLORS['gray'],
     'REVIEW_REQUIRED': COLORS['gray'],
 }
-NAV_ITEMS = [
-    {'label': 'Suche', 'href': '/suche', 'icon': '⌕'},
-    {'label': 'Dashboard', 'href': '/', 'icon': '▤'},
-    {'label': 'Insights', 'href': '/chatbot', 'icon': '⁇'},
-    {'label': 'Gemeinderanking', 'href': '/ranking', 'icon': '▲'},
-    {'label': 'Gemeindeprofil', 'href': '/gemeinde', 'icon': '◉'},
-    {'label': 'Reglementanalyse', 'href': '/regulierung', 'icon': '⚖'},
-    {'label': 'Baugesuche', 'href': '/Baugesuche', 'icon': '▣'},
-    {'label': 'Investment Case', 'href': '/investment-case', 'icon': '◈'},
-    {'label': 'Datenqualität', 'href': '/datenqualitaet', 'icon': '✓'},
-    {'label': 'Administration', 'href': '/administration', 'icon': '⚙'},
+# Suche steht als primärer Einstiegspunkt separat vom Rest (eigener, hervorgehobener Block
+# in der Sidebar) statt gleichrangig mit z.B. Administration in einer flachen Liste.
+NAV_SEARCH_ITEM = {'label': 'Suche', 'href': '/', 'icon': '⌕'}
+
+# Restliche Navigation nach Zweck gruppiert (mit Section-Label in der Sidebar), damit die
+# bisher 9 gleichrangigen Einträge eine erkennbare Struktur bekommen.
+NAV_GROUPS = [
+    {'label': 'AI Insights', 'items': [
+        {'label': 'ask RIS', 'href': '/chatbot', 'icon': '✦'},
+    ]},
+    {'label': 'Analyse', 'items': [
+        {'label': 'Analyse Parzellen', 'href': '/suche/parzellen', 'icon': '⬚'},
+        {'label': 'Analyse Gemeinden', 'href': '/gemeinde', 'icon': '◉'},
+        {'label': 'Analyse Reglemente', 'href': '/regulierung', 'icon': '⚖'},
+        {'label': 'Analyse Baugesuche', 'href': '/Baugesuche', 'icon': '▣'},
+        {'label': 'Analyse Investitionspotenzial', 'href': '/investment-case', 'icon': '◈'},
+    ]},
+    {'label': 'Dashboard', 'items': [
+        {'label': 'Dashboard', 'href': '/dashboard', 'icon': '▤'},
+    ]},
+    {'label': 'System', 'items': [
+        {'label': 'Update Reglemente', 'href': '/update-reglement', 'icon': '⟳'},
+        {'label': 'Datenqualität', 'href': '/datenqualitaet', 'icon': '✓'},
+        {'label': 'Administration', 'href': '/administration', 'icon': '⚙'},
+    ]},
 ]
 
 # Kategorial-Palette für Charts: blue/teal zuerst (mehr Blautöne), navy bewusst ausgeschlossen

@@ -3,15 +3,15 @@ from dash import html, dcc, Input, Output, callback
 from config.settings import STATUS_COLORS
 from services.data import (
     regulation_table, regulation_count, regulation_municipality_options,
-    document_validation_status_counts, canton_options,
+    document_validation_status_counts, canton_options, regulation_subcounts,
 )
 from components.page_header import page_shell
 from components.cards import section_card, empty_state, kpi
 from components.filters import canton_dropdown, dropdown_filter, range_filter, reset_button, filter_bar
 from components.tables import styled_table
-from components.charts import scatter, CHART_CONFIG
+from components.charts import scatter, bar, CHART_CONFIG, with_definition_hover
 
-dash.register_page(__name__, path='/regulierung', name='Reglementanalyse')
+dash.register_page(__name__, path='/regulierung', name='Analyse Reglemente')
 
 COLS = [
     {'name': 'Gemeinde', 'id': 'municipality_name'},
@@ -27,7 +27,11 @@ COLS = [
 ]
 
 
-def layout():
+def layout(bfs=None, **kwargs):
+    # bfs kommt als URL-Query-Param (?bfs=...) für Deep-Links von anderen Seiten (z.B.
+    # Analyse Gemeinden "Analyse Reglemente ansehen") - vorbefüllt den Gemeinde-Filter
+    # der Tabelle direkt, der zugehörige update_table()-Callback feuert dank des initialen
+    # Dropdown-Werts ganz natürlich beim ersten Rendern (kein zusätzlicher Trigger nötig).
     try:
         cantons = canton_options()
         gemeinden = regulation_municipality_options()
@@ -38,14 +42,25 @@ def layout():
 
         table_filters = filter_bar(
             canton_dropdown('reg-table-canton', cantons),
-            dropdown_filter('reg-table-gemeinde', 'Gemeinde', gemeinde_options, placeholder='Alle Gemeinden', width='240px'),
+            dropdown_filter('reg-table-gemeinde', 'Gemeinde', gemeinde_options, placeholder='Alle Gemeinden', width='240px',
+                             value=int(bfs) if bfs else None),
             range_filter('Komplexitätsindex', 'reg-table-complexity-min', 'reg-table-complexity-max'),
             range_filter('Reglementsalter (Jahre)', 'reg-table-age-min', 'reg-table-age-max'),
             dropdown_filter('reg-table-status', 'Dok.-Status', status_options, placeholder='Alle Status', width='220px'),
             reset_button('reg-table-reset'),
         )
 
-        return page_shell('/regulierung', 'Reglementanalyse', 'Reglementskomplexität, Interventionsgrad und Dokumentenalter je Gemeinde.', [
+        # Bei Deep-Link mit vorgefiltertem bfs (z.B. von der Analyse Gemeinden) macht der Titel
+        # sichtbar, dass die Seite in einem gefilterten Zustand ist, statt kommentarlos die
+        # generische Übersicht zu zeigen - plus ein Rückweg zur Ursprungsseite.
+        gemeinde_match = next((g for g in gemeinde_options if g['value'] == int(bfs)), None) if bfs else None
+        subtitle = 'Reglementskomplexität, Interventionsgrad und Dokumentenalter je Gemeinde.'
+        back_link = None
+        if gemeinde_match:
+            subtitle = f"Gefiltert auf {gemeinde_match['label']}."
+            back_link = {'label': 'Zurück zur Analyse Gemeinden', 'href': f'/gemeinde?bfs={int(bfs)}'}
+
+        return page_shell('/regulierung', 'Analyse Reglemente', subtitle, [
             section_card('Filter', filter_bar(canton_dropdown('regulation-canton', cantons))),
             html.Div(id='regulation-kpis'),
             section_card('Reglementsalter vs. Komplexität', dcc.Graph(id='regulation-scatter', config=CHART_CONFIG)),
@@ -53,10 +68,13 @@ def layout():
                 table_filters,
                 html.Div(id='reg-table-result-count', className='kpi-subtitle', style={'margin': '18px 0 10px 0'}),
                 html.Div(id='regulation-table-wrap'),
+                html.P('Zeile links anklicken (Checkbox) für die Verdichtung-/Wohnen-Detailaufschlüsselung dieser Gemeinde.',
+                       className='kpi-subtitle', style={'margin': '14px 0 10px 0'}),
+                html.Div(id='reg-detail-panel'),
             ]),
-        ])
+        ], back_link=back_link)
     except Exception as e:
-        return page_shell('/regulierung', 'Reglementanalyse', '', empty_state(str(e)))
+        return page_shell('/regulierung', 'Analyse Reglemente', '', empty_state(str(e)))
 
 
 @callback(
@@ -111,4 +129,39 @@ def update_table(canton_id, bfs, complexity_min, complexity_max, age_min, age_ma
 
     df = regulation_table(**kwargs)
     count_text = f"{total:,} Gemeinde-Reglemente gefunden"
-    return styled_table(df.to_dict('records'), COLS, page_size=20, sort=True, filter_=False), count_text
+    table = styled_table(df.to_dict('records'), COLS, page_size=20, sort=True, filter_=False,
+                          id='reg-table', row_selectable='single', selected_rows=[])
+    return table, count_text
+
+
+@callback(
+    Output('reg-detail-panel', 'children'),
+    Input('reg-table', 'derived_virtual_selected_rows'), Input('reg-table', 'derived_virtual_data'),
+)
+def update_detail_panel(selected_rows, virtual_data):
+    if not selected_rows or not virtual_data:
+        return None
+    row = virtual_data[selected_rows[0]]
+    bfs, name = row.get('BFS'), row.get('municipality_name')
+    if not bfs:
+        return None
+
+    sub = regulation_subcounts(bfs)
+    if sub.empty or sub['n'].sum() == 0:
+        return section_card(f'Detailaufschlüsselung: {name}',
+                             html.P('Keine Verdichtung-/Wohnen-Stichwörter im Reglementstext erfasst.', className='kpi-subtitle'))
+
+    verdichtung = sub[sub['Oberbereich'] == 'Verdichtung']
+    wohnen = sub[sub['Oberbereich'] == 'Wohnen']
+    return section_card(f'Detailaufschlüsselung: {name}', html.Div([
+        html.Div([
+            html.H4('Verdichtung im Detail', style={'fontSize': '0.85rem', 'marginBottom': '6px', 'color': 'var(--navy)'}),
+            dcc.Graph(figure=with_definition_hover(bar(verdichtung, x='n', y='Sub-Kategorie', labels={'n': '', 'Sub-Kategorie': ''}, hover_data=['Definition'], height=190)),
+                      config=CHART_CONFIG, responsive=False, style={'height': '190px'}),
+        ]),
+        html.Div([
+            html.H4('Wohnen im Detail', style={'fontSize': '0.85rem', 'marginBottom': '6px', 'color': 'var(--navy)'}),
+            dcc.Graph(figure=with_definition_hover(bar(wohnen, x='n', y='Sub-Kategorie', labels={'n': '', 'Sub-Kategorie': ''}, hover_data=['Definition'], height=190)),
+                      config=CHART_CONFIG, responsive=False, style={'height': '190px'}),
+        ]),
+    ], style={'display': 'flex', 'flexDirection': 'column', 'gap': '18px'}))

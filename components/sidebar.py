@@ -1,5 +1,5 @@
 from dash import html, dcc, clientside_callback, Output, Input
-from config.settings import NAV_ITEMS
+from config.settings import NAV_SEARCH_ITEM, NAV_GROUPS
 
 # Official pom+ plus-mark (traced vector from pom.ch favicon), recolored to their brand green,
 # embedded as a data-URI (Dash's html.Img has no dangerouslySetInnerHTML equivalent).
@@ -33,24 +33,35 @@ def pom_logo():
     ], className='pom-logo')
 
 
+def _nav_link(item, active_path):
+    is_active = item['href'] == active_path
+    return dcc.Link(
+        html.Div([
+            html.Span(item['icon'], className='nav-icon'),
+            html.Span(item['label'], className='nav-label'),
+        ], className='nav-link-inner' + (' active' if is_active else '')),
+        href=item['href'], className='nav-link-wrap',
+    )
+
+
 def sidebar(active_path):
-    links = []
-    for item in NAV_ITEMS:
-        is_active = item['href'] == active_path
-        links.append(dcc.Link(
-            html.Div([
-                html.Span(item['icon'], className='nav-icon'),
-                html.Span(item['label'], className='nav-label'),
-            ], className='nav-link-inner' + (' active' if is_active else '')),
-            href=item['href'], className='nav-link-wrap',
-        ))
+    # Suche steht separat/hervorgehoben vor den gruppierten Einträgen - als primärer
+    # Einstiegspunkt statt gleichrangig z.B. mit Administration (siehe NAV_SEARCH_ITEM).
+    search_block = html.Div(_nav_link(NAV_SEARCH_ITEM, active_path), className='nav-search-block')
+
+    group_blocks = []
+    for group in NAV_GROUPS:
+        section_children = [html.Div(group['label'], className='nav-section-label')]
+        section_children += [_nav_link(item, active_path) for item in group['items']]
+        group_blocks.append(html.Div(section_children, className='nav-group'))
+
     return html.Div([
         html.Div([
             html.Img(src=f'data:image/svg+xml;base64,{RIS_LOGO_FULL_SVG_B64}', className='brand-logo-full'),
             html.Img(src=f'data:image/svg+xml;base64,{RIS_LOGO_ICON_SVG_B64}', className='brand-logo-icon'),
             html.Button('‹', id='sidebar-toggle', className='sidebar-toggle', title='Menü ein-/ausklappen'),
         ], className='brand-block'),
-        html.Div(links, className='nav-links'),
+        html.Div([search_block, *group_blocks], className='nav-links'),
         html.Div([
             html.Div('pom+ Consulting AG', className='sidebar-footer-title'),
             html.Div('HSLU Forschungskooperation', className='sidebar-footer-sub'),

@@ -13,7 +13,7 @@ from services.geo import get_coordinates, get_parcel_data, get_zone_data, clean_
 from components.page_header import page_shell
 from components.cards import section_card, empty_state
 
-dash.register_page(__name__, path='/investment-case', name='Investment Case')
+dash.register_page(__name__, path='/investment-case', name='Analyse Investitionspotenzial')
 
 NA = '–'
 # Einzige nicht aus der Datenbank stammende Annahme: angenommener Finanzierungs-/Carry-Satz
@@ -69,26 +69,39 @@ def _verdict_col(value, caption):
     ], className='decision-verdict-col')
 
 
-def _tile(label, value, caption):
+LOW_SAMPLE_THRESHOLD = 30
+
+
+def _tile(label, value, caption, assumption=False):
+    label_children = [label]
+    if assumption:
+        # Kachel beruht (teilweise) auf einer Nutzer-Annahme statt reinen RIS-Daten
+        # (Investitionsvolumen, Current-Underwriting-Annahme oder Carry-Satz) - Badge macht
+        # das auf einen Blick sichtbar statt nur im Kleingedruckten der Caption.
+        label_children.append(html.Span('Annahme', className='decision-badge-assumption'))
     return html.Div([
-        html.Div(label, className='decision-tile-label'),
+        html.Div(label_children, className='decision-tile-label'),
         html.Div(value, className='decision-tile-value'),
         html.Div(caption, className='decision-tile-caption'),
-    ], className='decision-tile')
+    ], className='decision-tile' + (' decision-tile--assumption' if assumption else ''))
 
 
 def _evidence_table(bench):
     def m(level, key):
         return _fmt_m(_months(bench.get(level, {}).get(key)))
 
-    def n(level):
-        return str(bench.get(level, {}).get('n') or 0)
+    def n_cell(level):
+        count = bench.get(level, {}).get('n') or 0
+        low = 0 < count < LOW_SAMPLE_THRESHOLD
+        children = [str(count)]
+        if low:
+            children.append(html.Span('geringe Fallzahl', className='decision-evidence-lowsample-note'))
+        return html.Td(children)
 
     rows = [
         ('Median', m('national', 'p50'), m('municipality', 'p50'), m('canton', 'p50')),
         ('P75', m('national', 'p75'), m('municipality', 'p75'), m('canton', 'p75')),
         ('P90', m('national', 'p90'), m('municipality', 'p90'), m('canton', 'p90')),
-        ('Cases', n('national'), n('municipality'), n('canton')),
     ]
     return html.Table([
         html.Thead(html.Tr([
@@ -97,6 +110,9 @@ def _evidence_table(bench):
         html.Tbody([
             html.Tr([html.Td(label, className='decision-evidence-rowlabel'), html.Td(a), html.Td(b), html.Td(c)])
             for label, a, b, c in rows
+        ] + [
+            html.Tr([html.Td('Cases', className='decision-evidence-rowlabel'),
+                     n_cell('national'), n_cell('municipality'), n_cell('canton')]),
         ]),
     ], className='decision-evidence-table')
 
@@ -117,7 +133,7 @@ def layout(query=None, **kwargs):
     # jeden Callback einmal mit den initialen Prop-Werten aus).
     initial_address = clean_address(unquote(query)) if query else ''
     return page_shell(
-        '/investment-case', 'Investment Case',
+        '/investment-case', 'Analyse Investitionspotenzial',
         'Statistikbasierte Einschätzung von Bewilligungsdauer und -risiko für einen Akquisitionsentscheid, '
         'berechnet aus den realen RIS-Baugesuchs- und Gemeinde-Rankingdaten für die gesuchte Adresse.',
         [
@@ -140,9 +156,27 @@ def layout(query=None, **kwargs):
                 ], style={'display': 'none'}),
             ]),
             dcc.Store(id='ic-data-store', data={}),
+            # storage_type='session': merkt sich die zuletzt in der Suche gewählte Adresse im
+            # Browser über Seitenwechsel hinweg - gleiche id wie in pages/search.py, damit auch
+            # ein direkter Klick auf den Menüpunkt "Analyse Investitionspotenzial" (ohne ?query=) die zuletzt
+            # gesuchte Adresse übernimmt statt leer zu bleiben.
+            dcc.Store(id='last-address-store', storage_type='session'),
             html.Div(id='ic-sheet-container'),
         ],
     )
+
+
+@callback(
+    Output('ic-address-input', 'value'), Output('ic-search-button', 'n_clicks'),
+    Input('last-address-store', 'data'),
+    State('ic-address-input', 'value'), State('ic-search-button', 'n_clicks'),
+)
+def prefill_from_last_search(stored_address, current_value, current_clicks):
+    # Nur einspringen, wenn die Seite ohne ?query= aufgerufen wurde (Adressfeld noch leer) -
+    # ein via layout(query=...) vorbefülltes Feld hat Vorrang und wird nicht überschrieben.
+    if current_value or not stored_address:
+        return dash.no_update, dash.no_update
+    return stored_address, (current_clicks or 0) + 1
 
 
 @callback(
@@ -192,7 +226,7 @@ def lookup_address(n_clicks, n_submit, address):
 )
 def render_sheet(data, investment_mio, underwriting_months):
     if not data:
-        return empty_state('Adresse eingeben und suchen, um den Investment Case mit RIS-Daten zu berechnen.')
+        return empty_state('Adresse eingeben und suchen, um das Investitionspotenzial mit RIS-Daten zu berechnen.')
     if data.get('error'):
         return empty_state(data['error'])
     return build_decision_sheet(data, investment_mio, underwriting_months)
@@ -206,9 +240,10 @@ def build_decision_sheet(data, investment_mio, underwriting_months):
     # Datenlage. median_duration aus fact_municipality (Ranking-Sheet) deckt sich i.d.R. mit
     # muni_b['p50'] (fact_project), dient hier als robuster erster Fallback.
     median_days = _first_available(data.get('median_duration'), muni_b.get('p50'), canton_b.get('p50'), national_b.get('p50'))
+    p75_days = _first_available(muni_b.get('p75'), canton_b.get('p75'), national_b.get('p75'))
     p90_days = _first_available(muni_b.get('p90'), canton_b.get('p90'), national_b.get('p90'))
     p95_days = _first_available(muni_b.get('p95'), canton_b.get('p95'), national_b.get('p95'))
-    expected_months, p90_months, p95_months = _months(median_days), _months(p90_days), _months(p95_days)
+    expected_months, p75_months, p90_months, p95_months = _months(median_days), _months(p75_days), _months(p90_days), _months(p95_days)
 
     peer_rank, peer_group_size = data.get('peer_rank'), data.get('peer_group_size')
     if peer_rank is not None and peer_group_size and peer_group_size > 1:
@@ -220,13 +255,17 @@ def build_decision_sheet(data, investment_mio, underwriting_months):
 
     downside_delta = None if (p90_months is None or expected_months is None) else p90_months - expected_months
     delay_exposure = _chf_cost(downside_delta, investment_mio)
+    # Moderates Szenario (P75 statt P90) - nutzt dieselbe Carry-Satz-Annahme wie Delay
+    # Exposure, keine zusätzliche Annahme noetig.
+    moderate_delta = None if (p75_months is None or expected_months is None) else p75_months - expected_months
+    moderate_exposure = _chf_cost(moderate_delta, investment_mio)
 
     verdict_caption = (
         f'Underwrite {expected_months:.0f} Monate; Regulierungspuffer von {_fmt_chf(delay_exposure)} einplanen.'
         if verdict == 'PROCEED' and expected_months is not None
         else 'Vertiefte Prüfung empfehlenswert; überdurchschnittliches Timing-Risiko in dieser Gemeinde.'
         if verdict == 'REVIEW'
-        else 'Keine ausreichende Datenbasis für eine Beurteil des Investment Case.'
+        else 'Keine ausreichende Datenbasis für eine Beurteilung des Investitionspotenzials.'
     )
 
     current_months = underwriting_months if isinstance(underwriting_months, (int, float)) else None
@@ -265,13 +304,13 @@ def build_decision_sheet(data, investment_mio, underwriting_months):
             higher_risk.append('+ Reglement vergleichsweise komplex (Regulierungs-Score unter nat. Median)')
 
     return html.Div([
-        # html.Div('RIS / Investment Case – Real Data', className='decision-header-overline'),
+        # html.Div('RIS / Analyse Investitionspotenzial – Real Data', className='decision-header-overline'),
         # html.H2('Acquisition Decision Sheet', className='decision-header-title'),
         # html.Div(f"{data.get('municipality_name', NA)} ({data.get('canton', NA)})   |   " + '   |   '.join(subline_parts),
         #          className='decision-subline'),
 
         html.Div([
-            html.Div('RIS Investment Case Beurteilung', className='decision-label'),
+            html.Div('RIS Analyse Investitionspotenzial – Beurteilung', className='decision-label'),
             html.Div([
                 _verdict_col(verdict, verdict_caption),
                 _verdict_col(_fmt_m(expected_months, 1, ' MONATE').upper(), 'Erwartete Bewilligungsdauer'),
@@ -285,7 +324,9 @@ def build_decision_sheet(data, investment_mio, underwriting_months):
             _tile('Parzellenfläche', f"{data['area']:.0f} m²" if data.get('area') else NA, 'amtliche Vermessung'),
             _tile('Downside', f'+{downside_delta:.1f} Monate' if downside_delta is not None else NA, 'P90 vs. Median'),
             _tile('Verfahren > 1 Jahr', _fmt_pct(data.get('share_gt_365')), 'Anteil, Gemeinde (real erfasst)'),
-            _tile('Delay Exposure', _fmt_chf(delay_exposure), f'bei CHF {investment_mio or 0:g} Mio., {CARRY_RATE_ANNUAL:.1%} p.a. Annahme'),
+            _tile('Exposure (P75-Szenario)', _fmt_chf(moderate_exposure),
+                  f'+{moderate_delta:.1f} Monate vs. Median' if moderate_delta is not None else NA, assumption=True),
+            _tile('Delay Exposure', _fmt_chf(delay_exposure), f'bei CHF {investment_mio or 0:g} Mio., {CARRY_RATE_ANNUAL:.1%} p.a. Annahme', assumption=True),
         ], className='decision-tile-row'),
 
         html.Div([
@@ -301,11 +342,11 @@ def build_decision_sheet(data, investment_mio, underwriting_months):
         html.Div([
             html.Div('Investment Impact', className='decision-label'),
             html.Div([
-                _tile('Current Underwriting', f'{current_months:.0f} m' if current_months is not None else NA, 'current assumption'),
+                _tile('Current Underwriting', f'{current_months:.0f} m' if current_months is not None else NA, 'aktuelle Annahme des Nutzers', assumption=True),
                 _tile('RIS Base Case', _fmt_m(expected_months),
-                      f'+{delta_base:.1f} m / {_fmt_chf(chf_base)}' if delta_base is not None else NA),
+                      f'+{delta_base:.1f} m / {_fmt_chf(chf_base)}' if delta_base is not None else NA, assumption=True),
                 _tile('RIS Downside', _fmt_m(p90_months),
-                      f'+{delta_downside:.1f} m / {_fmt_chf(chf_downside)}' if delta_downside is not None else NA),
+                      f'+{delta_downside:.1f} m / {_fmt_chf(chf_downside)}' if delta_downside is not None else NA, assumption=True),
                 _tile('Severe / Appeal', _fmt_m(p95_months, 0, '+ m'), 'tail risk (P95 Kanton/national)'),
             ], className='decision-tile-row'),
         ], className='decision-block'),

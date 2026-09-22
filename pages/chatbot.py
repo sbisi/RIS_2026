@@ -5,7 +5,7 @@ from components.page_header import page_shell
 from components.cards import section_card
 from services.chatbot import ask
 
-dash.register_page(__name__, path='/chatbot', name='Insights')
+dash.register_page(__name__, path='/chatbot', name='ask RIS')
 
 EXAMPLE_QUESTIONS = [
     'Wie viel Prozent der Gemeinden haben eine Bauzonenordnung erfasst?',
@@ -38,7 +38,7 @@ def _api_history(history):
 
 
 def layout():
-    return page_shell('/chatbot', 'Insights', 'Stelle Fragen in natürlicher Sprache zu den RIS-Daten.', [
+    return page_shell('/chatbot', 'ask RIS', 'Stelle Fragen in natürlicher Sprache zu den RIS-Daten.', [
         section_card('Chat', [
             html.Div([
                 html.Div([

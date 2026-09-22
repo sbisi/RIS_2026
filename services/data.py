@@ -1,6 +1,7 @@
 import pandas as pd
 
 from database.db import query_df, table_exists
+from services.zone_params import ZONE_PARAM_TYPES
 
 def metrics():
     if not table_exists('fact_project'): return {'projects':0,'municipalities':0,'median':None,'over180':None,'over365':None}
@@ -53,7 +54,7 @@ def duplicate_projects_detail(limit=100):
 
 def search_municipalities(term, limit=5):
     """Präfix-/Substring-Suche auf Gemeindenamen, für die Suche-Seite - erkennt
-    reine Gemeinde-Eingaben, um direkt zum Gemeindeprofil statt zur Adresssuche zu leiten."""
+    reine Gemeinde-Eingaben, um direkt zur Analyse Gemeinden statt zur Adresssuche zu leiten."""
     return query_df('''
         SELECT dm.bfs_number AS BFS, dm.municipality_name, c.canton_code AS Kanton
         FROM dim_municipality dm LEFT JOIN dim_canton c ON c.canton_id=dm.canton_id
@@ -198,6 +199,9 @@ def municipality_regulation_detail(bfs):
     return query_df('''
         SELECT fr.complexity_index_raw, fr.intervention_count, fr.architecture_count,
                fr.housing_count, fr.densification_count, fr.document_age,
+               fr.densification_leitbild_count, fr.densification_aktivierung_count,
+               fr.densification_mindest_count, fr.densification_bonus_count, fr.densification_auflagen_count,
+               fr.housing_bezahlbarkeit_count, fr.housing_nutzung_count, fr.housing_erschliessung_count,
                dvi.validation_status, ld.canonical_url
         FROM fact_regulation fr
         JOIN dim_municipality dm ON dm.municipality_id=fr.municipality_id
@@ -206,6 +210,59 @@ def municipality_regulation_detail(bfs):
         LEFT JOIN dim_law_document ld ON ld.law_document_id=dv.law_document_id
         WHERE dm.bfs_number=?
     ''', [int(bfs)])
+
+REGULATION_DEFINITIONS = {
+    # Hauptkategorien (Analyse Reglemente - Übersichtschart)
+    'Intervention': 'Zählt, wie oft im Reglement eine Instanz (z.B. Gemeinderat) nach eigenem '
+                     'Ermessen einen Parameter anpassen kann (Interventionsmöglichkeit, '
+                     'Verhandlungsspielraum, Leeway) – Mass für regulatorische Unschärfe, nicht '
+                     'für Themenhäufigkeit.',
+    'Architektur': 'Häufigkeit architekturbezogener Stichwörter im Reglementstext '
+                    '(z.B. "gute Einpassung").',
+    'Wohnen': 'Häufigkeit wohnbezogener Stichwörter im Reglementstext – Summe aus '
+              'Bezahlbarkeit, Nutzung und Erschliessung.',
+    'Verdichtung': 'Häufigkeit verdichtungsbezogener Stichwörter im Reglementstext – Summe aus '
+                   'Leitbild, Aktivierung, Mindestvorgaben, Bonus und Auflagen.',
+    # Sub-Kategorien Verdichtung
+    'Leitbild': 'Erwähnungen eines städtebaulichen Leitbilds im Verdichtungskontext.',
+    'Aktivierung': 'Erwähnungen von Aktivierungs-/Anreizmechanismen zur Verdichtung.',
+    'Mindestvorgaben': 'Erwähnungen von Mindestdichte-Anforderungen.',
+    'Bonus': 'Erwähnungen von Verdichtungsboni (z.B. zusätzliche Ausnützung bei Verdichtung).',
+    'Auflagen': 'Erwähnungen von Auflagen/Bedingungen im Zusammenhang mit Verdichtung.',
+    # Sub-Kategorien Wohnen
+    'Bezahlbarkeit': 'Erwähnungen von bezahlbarem bzw. preisgünstigem Wohnraum.',
+    'Nutzung': 'Erwähnungen von Wohnnutzungsvorschriften (z.B. Wohnanteil).',
+    'Erschliessung': 'Erwähnungen der Erschliessung im Wohnkontext.',
+}
+
+def regulation_subcounts(bfs):
+    """Detailaufschlüsselung der Verdichtung- und Wohnen-Stichwortzählungen für die
+    Analyse Reglemente - Seite (aufklappbare Detailansicht pro Gemeinde) - Sub-Kategorien
+    summieren sich exakt zu densification_count bzw. housing_count."""
+    row = query_df('''
+        SELECT fr.densification_leitbild_count, fr.densification_aktivierung_count,
+               fr.densification_mindest_count, fr.densification_bonus_count, fr.densification_auflagen_count,
+               fr.housing_bezahlbarkeit_count, fr.housing_nutzung_count, fr.housing_erschliessung_count
+        FROM fact_regulation fr
+        JOIN dim_municipality dm ON dm.municipality_id=fr.municipality_id
+        WHERE dm.bfs_number=?
+    ''', [int(bfs)])
+    if row.empty:
+        return pd.DataFrame(columns=['Oberbereich', 'Sub-Kategorie', 'n', 'Definition'])
+    r = row.iloc[0]
+    records = [
+        {'Oberbereich': 'Verdichtung', 'Sub-Kategorie': 'Leitbild', 'n': r.densification_leitbild_count or 0},
+        {'Oberbereich': 'Verdichtung', 'Sub-Kategorie': 'Aktivierung', 'n': r.densification_aktivierung_count or 0},
+        {'Oberbereich': 'Verdichtung', 'Sub-Kategorie': 'Mindestvorgaben', 'n': r.densification_mindest_count or 0},
+        {'Oberbereich': 'Verdichtung', 'Sub-Kategorie': 'Bonus', 'n': r.densification_bonus_count or 0},
+        {'Oberbereich': 'Verdichtung', 'Sub-Kategorie': 'Auflagen', 'n': r.densification_auflagen_count or 0},
+        {'Oberbereich': 'Wohnen', 'Sub-Kategorie': 'Bezahlbarkeit', 'n': r.housing_bezahlbarkeit_count or 0},
+        {'Oberbereich': 'Wohnen', 'Sub-Kategorie': 'Nutzung', 'n': r.housing_nutzung_count or 0},
+        {'Oberbereich': 'Wohnen', 'Sub-Kategorie': 'Erschliessung', 'n': r.housing_erschliessung_count or 0},
+    ]
+    for rec in records:
+        rec['Definition'] = REGULATION_DEFINITIONS.get(rec['Sub-Kategorie'], '')
+    return pd.DataFrame(records)
 
 def map_data():
     return query_df('''
@@ -405,17 +462,27 @@ def municipality_dimension_ranks(bfs):
     } for label, score_col, rank_col, pct_col in DIMENSION_RANK_ROWS])
 
 # stg_ranking_scores traegt bereits granulare 0-100-Scores pro Einzelmetrik (nicht nur die vier
-# Verbund-Scores in stg_ranking_ranking) - exakt die Quelle der beiden Radar-Charts im
-# Excel-Gemeindereport (Sheet DASHBOARD, Bereiche N1:P6 und T1:V7).
-OVERVIEW_RADAR_AXES = [
-    ('Prozess', 'score_prozess'), ('Dokumentalter', 'score_document_age_context'),
-    ('Intervention', 'score_intervention'), ('Regulierung', 'score_regulierung'),
-    ('Markt', 'score_markt'),
+# Verbund-Scores in stg_ranking_ranking). Die Achsen je Radar entsprechen bewusst exakt den
+# Komponenten aus *_SCORE_WEIGHTS oben (Score-Berechnung/Transparenz) - so zeigen die Radar-
+# Charts Gemeinde-vs-Peer je Score wirklich das, was in dessen Berechnung einfliesst, statt
+# separater, teils andersartiger Kennzahlen (score_regulierung z.B. ist NICHT dasselbe wie
+# score_reglement_complexity, und score_document_age_context fliesst gar nicht in die Score-
+# Berechnung ein - beide bewusst nicht mehr Teil dieser Radar-Achsen).
+GESAMT_RADAR_AXES = [
+    ('Prozess', 'score_prozess'), ('Reglement', 'score_reglement_complexity'), ('Markt', 'score_markt'),
 ]
 PROCESS_RADAR_AXES = [
     ('Median Dauer', 'score_median_duration'), ('SD Dauer', 'score_sd_duration'),
     ('> 180 Tage', 'score_share_gt_180'), ('> 365 Tage', 'score_share_gt_365'),
     ('Unapproved 2J', 'score_unapproved_2y'), ('Unapproved 3J', 'score_unapproved_3y'),
+]
+REGLEMENT_RADAR_AXES = [
+    ('Intervention', 'score_intervention'), ('Architektur', 'score_architektur'),
+    ('Verdichtung', 'score_verdichtung'), ('Wohnen', 'score_wohnen'),
+]
+MARKT_RADAR_AXES = [
+    ('Leerwohnungsdruck', 'score_leerwohnungsdruck'), ('Bevölkerung', 'score_population'),
+    ('MFH-Wachstum (CAGR)', 'score_mfh_cagr'),
 ]
 
 def _score_radar(bfs, axes):
@@ -440,10 +507,90 @@ def _score_radar(bfs, axes):
     return pd.DataFrame(records)
 
 def municipality_overview_radar(bfs):
-    return _score_radar(bfs, OVERVIEW_RADAR_AXES)
+    return _score_radar(bfs, GESAMT_RADAR_AXES)
 
 def municipality_process_radar(bfs):
     return _score_radar(bfs, PROCESS_RADAR_AXES)
+
+def municipality_reglement_radar(bfs):
+    return _score_radar(bfs, REGLEMENT_RADAR_AXES)
+
+def municipality_markt_radar(bfs):
+    return _score_radar(bfs, MARKT_RADAR_AXES)
+
+# Gewichte für die Score-Berechnung. Prozess- und Reglement-Gewichte stimmen exakt mit dem
+# "Weights"-Sheet der Rohdaten-Excel überein (gegen alle 645 gerankten Gemeinden mit Diff=0.0
+# verifiziert). Beim Markt-Score sind dort "Bevölkerung" und "MFH-Wohnungswachstum CAGR"
+# vertauscht dokumentiert - eine freie lineare Regression gegen die echten score_markt-Werte
+# ergab mit praktisch Null Residuum (~1e-14) die hier verwendeten, korrigierten Gewichte.
+PROZESS_SCORE_WEIGHTS = [
+    ('Median Bewilligungsdauer', 'score_median_duration', 0.30),
+    ('Streuung (SD) der Dauer', 'score_sd_duration', 0.30),
+    ('Anteil Verfahren > 180 Tage', 'score_share_gt_180', 0.15),
+    ('Anteil Verfahren > 365 Tage', 'score_share_gt_365', 0.10),
+    ('Unapproved nach 2 Jahren', 'score_unapproved_2y', 0.075),
+    ('Unapproved nach 3 Jahren', 'score_unapproved_3y', 0.075),
+]
+REGLEMENT_SCORE_WEIGHTS = [
+    ('Intervention', 'score_intervention', 0.40),
+    ('Architektur', 'score_architektur', 0.20),
+    ('Verdichtung', 'score_verdichtung', 0.20),
+    ('Wohnen', 'score_wohnen', 0.20),
+]
+MARKT_SCORE_WEIGHTS = [
+    ('Leerwohnungsdruck', 'score_leerwohnungsdruck', 0.70),
+    ('Bevölkerung', 'score_population', 0.20),
+    ('MFH-Wohnungswachstum (CAGR)', 'score_mfh_cagr', 0.10),
+]
+
+def _weighted_breakdown(row, weights):
+    records, total = [], 0.0
+    for label, col, w in weights:
+        val = row.get(col)
+        val = float(val) if val is not None and val == val else None
+        contrib = (val or 0) * w
+        total += contrib
+        records.append({'Komponente': label, 'Gewicht': w, 'Wert': val, 'Beitrag': contrib})
+    return total, records
+
+def municipality_score_breakdown(bfs):
+    """Rechnet Gesamt-/Prozess-/Reglement-/Markt-Score aus den granularen 0-100-Einzelscores in
+    stg_ranking_scores selbst nach (Gewichte siehe *_SCORE_WEIGHTS oben) und stellt das Ergebnis
+    dem Original-Wert aus der Ranking-Excel gegenüber - für die transparente
+    Score-Aufschlüsselung in der Analyse Gemeinden. score_reglement_complexity ist die korrekte Quelle
+    für den "Reglement"-Anteil (nicht score_regulierung, ein anderes, separates Feld - siehe
+    docs/data_model.md)."""
+    row = query_df('''
+        SELECT score_prozess, score_reglement_complexity, score_markt, score_gesamt_weighted,
+               score_median_duration, score_sd_duration, score_share_gt_180, score_share_gt_365,
+               score_unapproved_2y, score_unapproved_3y,
+               score_intervention, score_architektur, score_verdichtung, score_wohnen,
+               score_leerwohnungsdruck, score_population, score_mfh_cagr
+        FROM stg_ranking_scores WHERE BFS=?
+    ''', [int(bfs)])
+    if row.empty:
+        return None
+    r = row.iloc[0]
+
+    prozess_calc, prozess_detail = _weighted_breakdown(r, PROZESS_SCORE_WEIGHTS)
+    reglement_calc, reglement_detail = _weighted_breakdown(r, REGLEMENT_SCORE_WEIGHTS)
+    markt_calc, markt_detail = _weighted_breakdown(r, MARKT_SCORE_WEIGHTS)
+    gesamt_calc = 0.5 * prozess_calc + 0.3 * reglement_calc + 0.2 * markt_calc
+    gesamt_detail = [
+        {'Komponente': 'Prozess-Score', 'Gewicht': 0.50, 'Wert': prozess_calc, 'Beitrag': 0.5 * prozess_calc},
+        {'Komponente': 'Reglement-Score', 'Gewicht': 0.30, 'Wert': reglement_calc, 'Beitrag': 0.3 * reglement_calc},
+        {'Komponente': 'Markt-Score', 'Gewicht': 0.20, 'Wert': markt_calc, 'Beitrag': 0.2 * markt_calc},
+    ]
+
+    def clean(v):
+        return None if v is None or v != v else float(v)
+
+    return {
+        'prozess': {'original': clean(r.score_prozess), 'berechnet': prozess_calc, 'detail': prozess_detail},
+        'reglement': {'original': clean(r.score_reglement_complexity), 'berechnet': reglement_calc, 'detail': reglement_detail},
+        'markt': {'original': clean(r.score_markt), 'berechnet': markt_calc, 'detail': markt_detail},
+        'gesamt': {'original': clean(r.score_gesamt_weighted), 'berechnet': gesamt_calc, 'detail': gesamt_detail},
+    }
 
 PEER_BENCHMARK_METRICS = [
     ('Median Bearbeitungsdauer', 'median_duration', 'Tage', 'Prozess'),
@@ -588,3 +735,61 @@ def projects_count(canton_id=None, bfs=None, fsa_code=None, devtype_code=None, m
         {joins}
         {where}
     ''', params).iloc[0]['n']
+
+def zone_parameter_coverage():
+    """Für jeden der 28 Zonenparameter-Typen: Anteil der Zonen in dim_zone_parameter (14'125
+    Gemeinde/Zone-Kombinationen aus data_hslu260312.csv, die gesamtschweizerische Datenbasis),
+    für die mindestens ein Wert (Standard/Bonus/Arealüberbauung) erfasst ist, sowie die Anzahl
+    DISTINCT Gemeinden (BFS) mit mindestens einer solchen Zone - eine Gemeinde hat meist mehrere
+    Zonen, daher ist die Gemeinden-Anzahl je Parameter nicht einfach proportional zum Zonen-
+    Anteil. dim_zone_parameter deckt nur Zonen ab, zu denen auch tatsächlich Baugesuche
+    vorliegen - "Schweiz" heisst hier also die 14'125 in den Rohdaten vorkommenden Zonen bzw.
+    die 1'320 darin vorkommenden Gemeinden, nicht alle theoretisch existierenden."""
+    if not table_exists('dim_zone_parameter'):
+        return pd.DataFrame(columns=['Parameter', 'n_covered', 'coverage_pct', 'n_municipalities']), 0, 0
+    exprs = ', '.join(
+        f'count(*) FILTER (WHERE "{slug}_standard_value" IS NOT NULL OR "{slug}_bonus_value" IS NOT NULL '
+        f'OR "{slug}_arealueberbauung_value" IS NOT NULL) AS "{slug}", '
+        f'count(DISTINCT CASE WHEN "{slug}_standard_value" IS NOT NULL OR "{slug}_bonus_value" IS NOT NULL '
+        f'OR "{slug}_arealueberbauung_value" IS NOT NULL THEN BFS END) AS "{slug}__gem"'
+        for _, slug in ZONE_PARAM_TYPES
+    )
+    row = query_df(f'SELECT {exprs}, count(*) AS total, count(DISTINCT BFS) AS total_municipalities FROM dim_zone_parameter').iloc[0]
+    total = int(row['total'])
+    total_municipalities = int(row['total_municipalities'])
+    records = [
+        {
+            'Parameter': label, 'n_covered': int(row[slug]), 'coverage_pct': (row[slug] / total) if total else None,
+            'n_municipalities': int(row[f'{slug}__gem']),
+        }
+        for label, slug in ZONE_PARAM_TYPES
+    ]
+    df = pd.DataFrame(records).sort_values('coverage_pct', ascending=False).reset_index(drop=True)
+    return df, total, total_municipalities
+
+def municipality_parameter_ranking(limit=15):
+    """Rangliste der Gemeinden nach Anzahl unterschiedlicher Zonenparameter-Typen (von 28), für
+    die mindestens eine ihrer Zonen einen Wert hat - eine Gemeinde mit mehreren Zonen zählt
+    einen Parameter nur einmal, auch wenn er in mehreren ihrer Zonen vorkommt (Vereinigung über
+    die Zonen der Gemeinde, nicht Summe)."""
+    if not table_exists('dim_zone_parameter'):
+        return pd.DataFrame(columns=['municipality_name', 'Kanton', 'BFS', 'n_parameters'])
+    per_bfs_exprs = ', '.join(
+        f'max(CASE WHEN "{slug}_standard_value" IS NOT NULL OR "{slug}_bonus_value" IS NOT NULL '
+        f'OR "{slug}_arealueberbauung_value" IS NOT NULL THEN 1 ELSE 0 END) AS "{slug}"'
+        for _, slug in ZONE_PARAM_TYPES
+    )
+    sum_expr = ' + '.join(f'"{slug}"' for _, slug in ZONE_PARAM_TYPES)
+    return query_df(f'''
+        WITH per_bfs AS (
+          SELECT BFS, {per_bfs_exprs}
+          FROM dim_zone_parameter
+          GROUP BY BFS
+        )
+        SELECT dm.municipality_name, c.canton_code AS Kanton, per_bfs.BFS, ({sum_expr}) AS n_parameters
+        FROM per_bfs
+        JOIN dim_municipality dm ON dm.bfs_number = per_bfs.BFS
+        LEFT JOIN dim_canton c ON c.canton_id = dm.canton_id
+        ORDER BY n_parameters DESC
+        LIMIT ?
+    ''', [limit])
