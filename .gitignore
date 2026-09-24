@@ -9,3 +9,9 @@ data/raw/*
 exports/*
 !exports/.gitkeep
 .vscode/settings.json
+
+# Lokale Reglement-/Crawler-PDF-Archive - mehrere GB, sprengen GitHubs Push-Limit (~2GB) und
+# werden von der App defensiv als "nicht vorhanden" behandelt, falls sie fehlen (kein Deployment-
+# Bedarf). Bleiben unverändert auf der Festplatte, werden nur nicht mehr getrackt.
+data/Reglemente/
+data/audit/bzo_downloads/
