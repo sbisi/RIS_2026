@@ -1,14 +1,16 @@
 import dash
+import pandas as pd
 from dash import html, dcc, Input, Output, callback
 from services.data import (
     metrics, project_types, devtype_breakdown, projects_table, projects_count,
-    project_filter_options, canton_options, municipality_options,
+    project_filter_options, canton_options, municipality_options, projects_yearly_count,
 )
+from services.bfs_stats import get_new_dwellings_yearly
 from components.page_header import page_shell
 from components.cards import section_card, empty_state, kpi
 from components.filters import canton_dropdown, dropdown_filter, range_filter, date_range_filter, reset_button, filter_bar
 from components.tables import styled_table
-from components.charts import bar, CHART_CONFIG
+from components.charts import bar, line, CHART_CONFIG
 from config.settings import COLORS
 
 dash.register_page(__name__, path='/Baugesuche', name='Analyse Baugesuche')
@@ -62,6 +64,7 @@ def layout():
                 section_card('Gebäudefunktionen (FSA)', dcc.Graph(figure=fig_fsa, config=CHART_CONFIG)),
                 section_card('Baumassnahmenart', dcc.Graph(figure=fig_dt, config=CHART_CONFIG)),
             ], className='grid-2'),
+            section_card('Vergleich mit amtlicher BFS-Statistik', html.Div(id='bp-bfs-compare')),
             section_card('Projekte', [
                 filters,
                 html.Div(id='bp-result-count', className='kpi-subtitle', style={'margin': '18px 0 10px 0'}),
@@ -109,3 +112,44 @@ def update(canton_id, bfs, fsa_code, devtype_code, days_min, days_max, date_from
         ],
     )
     return table, count_text
+
+
+@callback(Output('bp-bfs-compare', 'children'), Input('bp-canton', 'value'), Input('bp-gemeinde', 'value'))
+def update_bfs_compare(canton_id, bfs):
+    if bfs:
+        gemeinden = municipality_options()
+        row = gemeinden[gemeinden['BFS'] == bfs]
+        region_label = row.iloc[0]['municipality_name'] if not row.empty else str(bfs)
+        bfs_df = get_new_dwellings_yearly(bfs=bfs)
+    elif canton_id:
+        cantons = canton_options()
+        row = cantons[cantons['canton_id'] == canton_id]
+        canton_code = row.iloc[0]['canton_code'] if not row.empty else None
+        region_label = row.iloc[0]['canton_name'] if not row.empty else str(canton_id)
+        bfs_df = get_new_dwellings_yearly(canton_code=canton_code)
+    else:
+        region_label = 'Schweiz'
+        bfs_df = get_new_dwellings_yearly()
+
+    if bfs_df is None or bfs_df.empty:
+        return empty_state('BFS-Vergleichsdaten aktuell nicht abrufbar.')
+
+    own_df = projects_yearly_count(canton_id=canton_id, bfs=bfs)
+    year_min, year_max = int(bfs_df['Jahr'].min()), int(bfs_df['Jahr'].max())
+    own_df = own_df[(own_df['Jahr'] >= year_min) & (own_df['Jahr'] <= year_max)]
+
+    merged = pd.concat([
+        own_df.rename(columns={'Projekte': 'Anzahl'}).assign(Serie='Baugesuche (eigene Datenbank)'),
+        bfs_df.rename(columns={'Wohnungen': 'Anzahl'}).assign(Serie='Neu erstellte Wohnungen (BFS, amtlich)'),
+    ])
+    fig = line(merged, x='Jahr', y='Anzahl', color='Serie', labels={'Anzahl': '', 'Jahr': ''},
+               markers=True, title=region_label)
+
+    return html.Div([
+        dcc.Graph(figure=fig, config=CHART_CONFIG),
+        html.P('Zwei unterschiedliche Metriken - kein 1:1-Abgleich, sondern Grössenordnung/Trend: '
+               '"Baugesuche" sind unsere eigenen erfassten Gesuchseingänge (Bewilligungsverfahren), '
+               '"Neu erstellte Wohnungen" ist die amtliche BFS-Statistik fertiggestellter Neubauten '
+               f'({year_min}–{year_max}, STAT-TAB px-x-0904030000_107).',
+               className='kpi-subtitle', style={'marginTop': '8px'}),
+    ])

@@ -8,12 +8,13 @@ from services.data import (
     municipality_overview_radar,
     municipality_process_radar, municipality_reglement_radar, municipality_markt_radar,
     municipality_peer_benchmark, regulation_subcounts, REGULATION_DEFINITIONS,
-    municipality_score_breakdown,
+    municipality_score_breakdown, ausnuetzungsziffer_coverage_map,
 )
 from components.page_header import page_shell
 from components.cards import kpi, section_card, empty_state, meta_pill, status_badge
 from components.tables import styled_table
 from components.charts import bar, line, radar, CHART_CONFIG, with_definition_hover
+from config.settings import COLORS
 
 dash.register_page(__name__, path='/gemeinde', name='Analyse Gemeinden')
 
@@ -24,12 +25,31 @@ def layout(bfs=None, **kwargs):
         opts = municipality_options()
         options = [{'label': r.municipality_name, 'value': int(r.BFS)} for r in opts.itertuples()]
         default = int(bfs) if bfs else (options[0]['value'] if options else None)
+
+        cov = ausnuetzungsziffer_coverage_map()
+        n_covered = int((cov['Abdeckung'] == 'Erfasst').sum())
+        fig_cov_map = px.scatter_map(
+            cov, lat='Latitude', lon='Longitude', color='Abdeckung', hover_name='municipality_name',
+            hover_data={'Kanton': True, 'Latitude': False, 'Longitude': False},
+            color_discrete_map={'Erfasst': COLORS['teal'], 'Nicht erfasst': COLORS['gray']},
+            category_orders={'Abdeckung': ['Erfasst', 'Nicht erfasst']},
+            zoom=6.4, center={'lat': 46.8, 'lon': 8.2}, map_style='carto-positron', height=480,
+        )
+        fig_cov_map.update_layout(margin=dict(l=0, r=0, t=0, b=0), legend=dict(orientation='h', y=-0.05))
+
         return page_shell('/gemeinde', 'Analyse Gemeinden', 'Detailanalyse einer einzelnen Gemeinde: Ranking, Regulierung, Prozess und Benchmark.', [
             section_card('Gemeinde wählen', html.Div([
                 dcc.Dropdown(id='bfs-select', options=options, value=default, placeholder='Gemeinde wählen', style={'maxWidth': '420px', 'flex': 1}),
                 html.Div(id='bfs-number-box', style={'minWidth': '160px'}),
             ], style={'display': 'flex', 'gap': '16px', 'alignItems': 'center'})),
             html.Div(id='municipality-content'),
+            html.Div(section_card('Abdeckung Ausnützungsziffer (Standard)', html.Div([
+                html.P(f'{n_covered:,} von {len(cov):,} Gemeinden ({n_covered / len(cov):.0%}) haben mindestens eine Zone mit '
+                       'erfasster Ausnützungsziffer (Standard) in dim_zone_parameter - Voraussetzung dafür, dass sich '
+                       '"Ausbaupotenzial" auf Analyse Parzellen für eine dortige Parzelle berechnen lässt.',
+                       className='kpi-subtitle', style={'marginBottom': '10px'}),
+                dcc.Graph(figure=fig_cov_map, config=CHART_CONFIG),
+            ])), style={'marginTop': '20px'}),
         ])
     except Exception as e:
         return page_shell('/gemeinde', 'Analyse Gemeinden', '', empty_state(str(e)))

@@ -276,6 +276,23 @@ def map_data():
         WHERE fr.overall_score IS NOT NULL
     ''')
 
+def ausnuetzungsziffer_coverage_map():
+    """Für jede Gemeinde mit Koordinaten: ob mindestens eine Zone mit erfasstem
+    Ausnützungsziffer-Standard-Wert existiert (dim_zone_parameter) - Grundlage dafür, ob sich
+    "Ausbaupotenzial" auf Analyse Parzellen für eine dortige Parzelle überhaupt berechnen lässt."""
+    return query_df('''
+        SELECT dm.bfs_number AS BFS, dm.municipality_name, c.canton_code AS Kanton,
+               co.Latitude, co.Longitude,
+               CASE WHEN zp.BFS IS NOT NULL THEN 'Erfasst' ELSE 'Nicht erfasst' END AS Abdeckung
+        FROM dim_municipality dm
+        LEFT JOIN dim_canton c ON c.canton_id=dm.canton_id
+        JOIN stg_coordinates co ON co.BFS=dm.bfs_number
+        LEFT JOIN (
+            SELECT DISTINCT BFS FROM dim_zone_parameter
+            WHERE ausnuetzungsziffer_standard_value IS NOT NULL AND ausnuetzungsziffer_standard_value != '–'
+        ) zp ON zp.BFS = dm.bfs_number
+    ''')
+
 def top_bottom_municipalities(n=10):
     df = query_df('''
         SELECT dm.municipality_name, c.canton_code AS Kanton, fr.overall_score
@@ -735,6 +752,23 @@ def projects_count(canton_id=None, bfs=None, fsa_code=None, devtype_code=None, m
         {joins}
         {where}
     ''', params).iloc[0]['n']
+
+def projects_yearly_count(canton_id=None, bfs=None):
+    """Baugesuche pro Jahr, nur nach Kanton/Gemeinde gefiltert - für den BFS-Vergleich auf
+    Analyse Baugesuche (services/bfs_stats.py). Bewusst ohne FSA/Devtype/Tage-Filter: die
+    BFS-Vergleichszahl (neu erstellte Wohnungen) kennt diese Kategorien nicht, ein Abgleich
+    wäre sonst nicht mehr aussagekräftig."""
+    joins, where, params = _projects_filter_clause(canton_id, bfs, None, None, None, None, None, None)
+    where = f'{where} AND fp.applied_date IS NOT NULL' if where else 'WHERE fp.applied_date IS NOT NULL'
+    return query_df(f'''
+        SELECT extract(year FROM fp.applied_date) AS Jahr, count(*) AS Projekte
+        FROM fact_project fp
+        LEFT JOIN dim_municipality dm ON dm.bfs_number=fp.BFS
+        LEFT JOIN dim_canton c ON c.canton_id=dm.canton_id
+        {joins}
+        {where}
+        GROUP BY 1 ORDER BY 1
+    ''', params)
 
 def zone_parameter_coverage():
     """Für jeden der 28 Zonenparameter-Typen: Anteil der Zonen in dim_zone_parameter (14'125

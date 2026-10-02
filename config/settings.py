@@ -38,6 +38,7 @@ NAV_GROUPS = [
     ]},
     {'label': 'Analyse', 'items': [
         {'label': 'Analyse Parzellen', 'href': '/suche/parzellen', 'icon': '⬚'},
+        {'label': 'Analyse Gebäude', 'href': '/analyse-gebaeude', 'icon': '⌂'},
         {'label': 'Analyse Gemeinden', 'href': '/gemeinde', 'icon': '◉'},
         {'label': 'Analyse Reglemente', 'href': '/regulierung', 'icon': '⚖'},
         {'label': 'Analyse Baugesuche', 'href': '/Baugesuche', 'icon': '▣'},

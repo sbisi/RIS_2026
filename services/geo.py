@@ -126,6 +126,108 @@ def get_bauzonen_info(e, n):
         return None
 
 
+# BFS-Codelisten für die GWR-Felder unten - verifiziert gegen die offizielle, mit Klartext-
+# Bezeichnungen ausgelieferte GWR-Kopie des Kantons Basel-Stadt (data.bs.ch, Datensatz
+# "Gebäude (Gebäude- und Wohnungsregister GWR)", Export mit use_labels=true). Das GWR-Schema ist
+# national einheitlich - die Codes gelten unabhängig vom Kanton der abgefragten Adresse.
+GWR_GEBAEUDESTATUS = {
+    '1001': 'projektiert', '1002': 'bewilligt', '1003': 'im Bau', '1004': 'bestehend',
+    '1005': 'nicht nutzbar', '1007': 'abgebrochen', '1008': 'nicht realisiert',
+}
+GWR_GEBAEUDEKATEGORIE = {
+    '1010': 'Provisorische Unterkunft', '1020': 'Gebäude mit ausschliesslicher Wohnnutzung',
+    '1030': 'Andere Wohngebäude (mit Nebennutzung)', '1040': 'Gebäude mit teilweiser Wohnnutzung',
+    '1060': 'Gebäude ohne Wohnnutzung', '1080': 'Sonderbau',
+}
+GWR_GEBAEUDEKLASSE = {
+    '1110': 'Gebäude mit einer Wohnung', '1121': 'Gebäude mit zwei Wohnungen',
+    '1122': 'Gebäude mit drei oder mehr Wohnungen', '1130': 'Wohngebäude für Gemeinschaften',
+    '1211': 'Hotelgebäude', '1212': 'Andere Gebäude für kurzfristige Beherbergung',
+    '1220': 'Bürogebäude', '1230': 'Gross-/Einzelhandelsgebäude',
+    '1241': 'Gebäude des Verkehrs-/Nachrichtenwesens (ohne Garagen)', '1242': 'Garagengebäude',
+    '1251': 'Industriegebäude', '1252': 'Behälter, Silos und Lagergebäude',
+    '1261': 'Gebäude für Kultur- und Freizeitzwecke', '1262': 'Museen und Bibliotheken',
+    '1263': 'Schul-/Hochschulgebäude, Forschungseinrichtungen',
+    '1264': 'Krankenhäuser und Facheinrichtungen des Gesundheitswesens', '1265': 'Sporthallen',
+    '1271': 'Landwirtschaftliche Betriebsgebäude', '1272': 'Kirchen und sonstige Kultgebäude',
+    '1273': 'Denkmäler / unter Denkmalschutz stehende Bauwerke',
+    '1274': 'Sonstige Hochbauten (anderweitig nicht genannt)', '1277': 'Gebäude für den Pflanzenbau',
+}
+GWR_BAUPERIODE = {
+    '8011': 'vor 1919', '8012': '1919–1945', '8013': '1946–1960', '8014': '1961–1970',
+    '8015': '1971–1980', '8016': '1981–1985', '8017': '1986–1990', '8018': '1991–1995',
+    '8019': '1996–2000', '8020': '2001–2005', '8021': '2006–2010', '8022': '2011–2015',
+    '8023': 'nach 2015',
+}
+
+
+def get_building_data(e, n):
+    """Eidg. Gebäude- und Wohnungsregister (GWR, BFS): Baujahr, Kategorie/Klasse, Geschosse,
+    Wohnungen usw. für das Gebäude an der gegebenen Koordinate - "was ist auf der Parzelle schon
+    gebaut".
+
+    Zwei Schritte, da der GWR-Layer selbst (ch.bfs.gebaeude_wohnungs_register) KEIN punktbasiertes
+    identify unterstützt (live getestet: liefert dafür immer 0 Treffer, unabhängig von Toleranz -
+    vermutlich als WMTS statt als abfragbarer Vektor-Layer eingerichtet). Stattdessen über das
+    amtliche Gebäudeadressverzeichnis auf die EGID auflösen, dann das GWR-Feature direkt per ID
+    abrufen (Muster 'ch.bfs.gebaeude_wohnungs_register/{egid}_0' - identisch zu dem, was auch die
+    normale Adresssuche selbst intern verlinkt)."""
+    url = 'https://api3.geo.admin.ch/rest/services/ech/MapServer/identify'
+    params = {
+        'geometryType': 'esriGeometryPoint', 'geometry': f'{e},{n}', 'sr': 2056,
+        'layers': 'all:ch.swisstopo.amtliches-gebaeudeadressverzeichnis', 'tolerance': 10,
+        # Ohne mapExtent/imageDisplay liefert dieser WMS-basierte Layer 0 Treffer (live getestet) -
+        # anders als die übrigen (Feature-Server-basierten) Layer in dieser Datei.
+        'mapExtent': f'{e - 500},{n - 500},{e + 500},{n + 500}', 'imageDisplay': '800,800,96',
+        'returnGeometry': False, 'f': 'json',
+    }
+    try:
+        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        results = response.json().get('results', [])
+        if not results:
+            logger.warning('get_building_data: kein Gebäude an Koordinaten e=%s n=%s', e, n)
+            return None
+        egid = results[0].get('attributes', {}).get('bdg_egid')
+        if not egid:
+            return None
+    except requests.exceptions.RequestException as ex:
+        logger.warning('get_building_data: Adressverzeichnis-Abfrage fehlgeschlagen für e=%s n=%s: %s', e, n, ex)
+        return None
+
+    try:
+        feature_url = f'https://api3.geo.admin.ch/rest/services/ech/MapServer/ch.bfs.gebaeude_wohnungs_register/{egid}_0'
+        response = requests.get(feature_url, params={'sr': 2056, 'f': 'json'}, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        attrs = response.json().get('feature', {}).get('attributes', {})
+        if not attrs:
+            return None
+    except requests.exceptions.RequestException as ex:
+        logger.warning('get_building_data: GWR-Abfrage fehlgeschlagen für EGID %s: %s', egid, ex)
+        return None
+
+    baujahr = attrs.get('gbauj')
+    dwelling_baujahre = sorted({j for j in (attrs.get('wbauj') or []) if j})
+    dwelling_flaechen = sorted({f for f in (attrs.get('warea') or []) if f})
+
+    return {
+        'egid': egid,
+        'egrid': attrs.get('egrid'),
+        'status': GWR_GEBAEUDESTATUS.get(str(attrs.get('gstat')), attrs.get('gstat')),
+        'kategorie': GWR_GEBAEUDEKATEGORIE.get(str(attrs.get('gkat')), attrs.get('gkat')),
+        'klasse': GWR_GEBAEUDEKLASSE.get(str(attrs.get('gklas')), attrs.get('gklas')),
+        'baujahr': int(baujahr) if baujahr else None,
+        'bauperiode': None if baujahr else GWR_BAUPERIODE.get(str(attrs.get('gbaup')), attrs.get('gbaup')),
+        'geschosse': attrs.get('gastw'),
+        'gebaeudeflaeche_m2': attrs.get('garea'),
+        'anzahl_wohnungen': attrs.get('ganzwhg'),
+        'wohnung_baujahr': f'{dwelling_baujahre[0]}–{dwelling_baujahre[-1]}' if len(dwelling_baujahre) > 1
+                           else (str(dwelling_baujahre[0]) if dwelling_baujahre else None),
+        'wohnung_flaeche_m2': f'{dwelling_flaechen[0]:g}–{dwelling_flaechen[-1]:g}' if len(dwelling_flaechen) > 1
+                              else (f'{dwelling_flaechen[0]:g}' if dwelling_flaechen else None),
+    }
+
+
 def extract_documents(document_field):
     if not document_field:
         return []

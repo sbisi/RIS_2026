@@ -9,7 +9,7 @@ from urllib.parse import unquote
 
 from database.db import query_df
 from services.data import municipality_summary, municipality_documents, municipality_sustainability
-from services.geo import get_coordinates, get_parcel_data, get_zone_data, clean_address, format_legal_status
+from services.geo import get_coordinates, get_parcel_data, get_zone_data, get_building_data, clean_address, format_legal_status
 from components.page_header import page_shell
 from components.cards import section_card, kpi
 from components.tables import styled_table
@@ -109,6 +109,7 @@ def layout(query=None, **kwargs):
                     dcc.Tab(label='Stammdaten', value='tab-1', className='ris-tab', selected_className='ris-tab--selected'),
                     dcc.Tab(label='Parameter', value='tab-2', className='ris-tab', selected_className='ris-tab--selected'),
                     dcc.Tab(label='Reglemente', value='tab-3', className='ris-tab', selected_className='ris-tab--selected'),
+                    dcc.Tab(label='Gebäude', value='tab-4', className='ris-tab', selected_className='ris-tab--selected'),
                 ], className='ris-tabs'),
                 html.Div(id='tab-content', style={'marginTop': '16px'}),
             ]),
@@ -152,6 +153,31 @@ def update_tab_content(active_tab, parcel_data):
                        style={'display': 'block', 'marginBottom': '6px', 'color': 'var(--blue)'})
                 for doc in docs
             ]),
+        ])
+
+    if active_tab == 'tab-4':
+        if not parcel_data:
+            return html.P('bitte Parzelle wählen')
+        building = get_building_data(parcel_data.get('e'), parcel_data.get('n'))
+        if not building:
+            return html.P('Kein Gebäude im Eidg. Gebäude- und Wohnungsregister (GWR) an dieser Koordinate gefunden '
+                           '(z.B. unbebaute Parzelle).', className='kpi-subtitle')
+        na = '–'
+        bfs = parcel_data.get('bfs')
+        return html.Div([
+            info_row('Status', building.get('status') or na),
+            info_row('Kategorie', building.get('kategorie') or na),
+            info_row('Klasse', building.get('klasse') or na),
+            info_row('Baujahr', building.get('baujahr') or building.get('bauperiode') or na),
+            info_row('Anzahl Geschosse', building.get('geschosse') or na),
+            info_row('Gebäudefläche', f"{building['gebaeudeflaeche_m2']} m²" if building.get('gebaeudeflaeche_m2') is not None else na),
+            info_row('Anzahl Wohnungen', building.get('anzahl_wohnungen') or na),
+            info_row('Baujahr der Wohnung(en)', building.get('wohnung_baujahr') or na),
+            info_row('Wohnungsfläche', f"{building['wohnung_flaeche_m2']} m²" if building.get('wohnung_flaeche_m2') else na),
+            info_row('EGID', building.get('egid') or na),
+            dcc.Link('Analyse Gebäude der ganzen Gemeinde ansehen →', href=f'/analyse-gebaeude?bfs={int(bfs)}',
+                     className='btn-primary', style={'textDecoration': 'none', 'display': 'inline-block', 'marginTop': '10px'})
+            if bfs else None,
         ])
 
     if active_tab != 'tab-1':
@@ -214,7 +240,7 @@ def store_parcel_data(n_clicks, n_submit, clicked_coordinates, address):
     if not parcel_id:
         return dash.no_update, dash.no_update
     zone_info = get_zone_data(e, n)
-    parcel_data = {'parcel_id': parcel_id, 'parcel_name': parcel_name, 'area': area, **zone_info}
+    parcel_data = {'parcel_id': parcel_id, 'parcel_name': parcel_name, 'area': area, 'e': e, 'n': n, **zone_info}
     return parcel_data, build_municipality_context(zone_info.get('bfs'), parcel_data)
 
 
@@ -235,13 +261,27 @@ def build_municipality_context(bfs, parcel_data=None):
         zone_row = get_zone_parameters(bfs, candidates)
         az_raw = zone_row.get('ausnuetzungsziffer_standard_value') if zone_row else None
         az_value = parse_max_numeric(az_raw)
+        bgf_potenzial = area * az_value if area and az_value else None
+
+        # Aktuelle Nutzungsfläche des bestehenden Gebäudes: im GWR (Register "Gebäude") nicht direkt
+        # als Feld vorhanden, daher als Gebäudefläche (Grundfläche) × Anzahl Geschosse angenähert -
+        # gleiche grobe Schätzlogik wie beim BGF-Potenzial oben.
+        building = get_building_data(parcel_data.get('e'), parcel_data.get('n'))
+        nutzungsflaeche_aktuell = None
+        if building and building.get('gebaeudeflaeche_m2') and building.get('geschosse'):
+            nutzungsflaeche_aktuell = building['gebaeudeflaeche_m2'] * building['geschosse']
+        ausbaupotenzial = bgf_potenzial - nutzungsflaeche_aktuell if bgf_potenzial is not None and nutzungsflaeche_aktuell is not None else None
+
         parcel_kpis = html.Div([
             kpi('Parzellenfläche', f'{area:,.0f} m²' if area else '–', accent='navy'),
             kpi('Ausnützungsziffer (Standard)', f'{az_value:g}' if az_value else '–',
                 f'„{az_raw}“' if az_raw and az_raw != '–' else 'für diese Zone nicht erfasst', accent='blue'),
-            kpi('Potenziell bebaubare Fläche (BGF)', f'{area * az_value:,.0f} m²' if area and az_value else '–',
-                'Parzellenfläche × Ausnützungsziffer – grobe Schätzung' if area and az_value else '', accent='teal'),
-        ], className='grid-3', style={'marginBottom': '20px'})
+            kpi('Potenziell bebaubare Fläche (BGF)', f'{bgf_potenzial:,.0f} m²' if bgf_potenzial is not None else '–',
+                'Parzellenfläche × Ausnützungsziffer – grobe Schätzung' if bgf_potenzial is not None else '', accent='teal'),
+            kpi('Ausbaupotenzial', f'{ausbaupotenzial:,.0f} m²' if ausbaupotenzial is not None else '–',
+                'BGF-Potenzial abzüglich aktueller Nutzungsfläche (Register "Gebäude") – grobe Schätzung'
+                if ausbaupotenzial is not None else 'benötigt BGF-Potenzial und Gebäudedaten', accent='orange'),
+        ], className='grid-4', style={'marginBottom': '20px'})
 
     kpis = html.Div([
         kpi('Gesamt-Score', f"{s.overall_score:.1f}" if s.overall_score == s.overall_score else '–', accent='navy'),

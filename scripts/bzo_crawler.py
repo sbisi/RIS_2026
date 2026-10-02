@@ -36,6 +36,12 @@ Nutzung (aus dem Projekt-Root, z.B. dashboard/):
     python scripts/bzo_crawler.py --limit 20   # Testlauf mit 20 Gemeinden
     python scripts/bzo_crawler.py              # alle Gemeinden (mehrere Stunden!)
     python scripts/bzo_crawler.py --canton ZH  # nur Kanton Zürich
+    python scripts/bzo_crawler.py --canton FR --sleep 10 --query-sleep 6  # noch vorsichtiger
+
+Fortsetzen nach Abbruch (Rechner-Standby, Absturz, manueller Stopp):
+    Einfach denselben Befehl nochmal ausführen - bereits in der Ergebnis-CSV vorhandene
+    Gemeinden werden automatisch übersprungen. Für einen komplett neuen Durchlauf trotz
+    vorhandener CSV: --restart anhängen (oder die CSV vorher löschen).
 """
 
 import argparse
@@ -67,7 +73,16 @@ LOG_CSV = PROJECT_ROOT / "data" / "audit" / "bzo_ergebnisse.csv"
 # ans übrige System angebunden, hier nur zum Abgleich "haben wir das schon / ist unsere Version
 # aktuell?" genutzt.
 REGLEMENTE_DIR = PROJECT_ROOT / "data" / "Reglemente"
-SLEEP_SECONDS = 2.0  # Pause zwischen Anfragen, um Server zu schonen
+# Mehrere Testläufe zeigten: die Trefferquote schwankt extrem zwischen Läufen (44.5% -> 63.0% ->
+# 3.4% -> 9.2% -> 16.0%/18.8%+0.9%), auch unabhängig von Code-Änderungen - starkes Indiz für
+# serverseitiges Rate-Limiting/Drosselung durch DuckDuckGo bei zu dichter Anfragefolge (die
+# inoffizielle ddgs-Bibliothek scrapt die Weboberfläche, keine offizielle API mit garantierten
+# Kontingenten). Ein Testlauf mit stark erhöhten Pausen (8s/4s) brach die Drosselung aber NICHT
+# zuverlässig, kostete dafür ~30h für den Volllauf - schlechter Tausch. Deshalb wieder auf einen
+# moderateren Wert gesenkt; die eigentliche Absicherung gegen Drosselungs-Lücken ist jetzt
+# --retry-not-found (gezieltes Nacherfassen statt pauschal längerer Pausen, siehe unten).
+SLEEP_SECONDS = 4.0  # Pause zwischen Gemeinden
+QUERY_SLEEP_SECONDS = 2.0  # Pause zwischen den DDG-Suchanfragen innerhalb einer Gemeinde
 TIMEOUT = 20
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; BZO-Research-Bot/1.0)"}
 
@@ -84,19 +99,33 @@ _SEARCH_TERM_GROUPS_DE = [
     ['Nutzungsreglement', 'Nutzungsordnung', 'Nutzungsplanung', 'Rahmennutzungsplan',
      'Rahmennutzungsplanung', 'Zonenvorschriften', 'Nutzungsvorschriften'],
 ]
+# Auf dieselbe Breite wie Deutsch (18 Begriffe/3 Gruppen) erweitert - der erste FR-Testlauf mit
+# der ursprünglich schmaleren Liste (2 Gruppen/~9 Begriffe) zeigte zwar schon eine gute Quote
+# (63%), aber GE/VD/NE/JU/TI blieben in der Gesamtauswertung schwächer; zusätzliche regionale
+# Bezeichnungen (v.a. Genf: PAL/PLQ) sollen das weiter verbessern.
 _SEARCH_TERM_GROUPS_FR = [
     ['Règlement communal des constructions', 'RCC', 'Règlement de construction',
-     "Règlement communal d'urbanisme", 'RCU'],
-    ["Plan général d'affectation", 'PGA', "Plan d'affectation",
-     "Règlement du plan d'affectation", "Règlement d'affectation"],
+     "Règlement communal d'urbanisme", 'RCU', "Règlement d'application"],
+    ["Plan général d'affectation", 'PGA', "Plan d'affectation communal",
+     "Plan d'affectation des zones", 'PAZ', "Règlement du plan d'affectation"],
+    ["Plan d'aménagement local", 'PAL', "Plan localisé de quartier", 'PLQ',
+     "Règlement de construction et d'aménagement", 'Zone à bâtir'],
 ]
 _SEARCH_TERM_GROUPS_IT = [
-    ['Piano regolatore', 'Regolamento edilizio', 'Norme di attuazione del piano regolatore',
-     'NAPR', 'Norme edilizie'],
+    ['Piano regolatore', 'PR', 'Regolamento edilizio', 'REC', 'Regolamento comunale delle costruzioni'],
+    ['Norme di attuazione del piano regolatore', 'NAPR', 'Piano regolatore generale', 'PRG',
+     'Norme edilizie', 'Zona edificabile'],
 ]
 
 
 def _build_queries(term_groups):
+    # Gemeindename bewusst NICHT in Anführungszeichen: das war ein Versuch (siehe Git-Historie),
+    # um Cross-Gemeinde-Verwechslungen zu reduzieren (z.B. "Kerzers" bekam ein Reglement von
+    # Conthey statt dem eigenen) - hat sich aber live als klar schlechter erwiesen. Testlauf
+    # Kanton FR mit Quotes: Recall brach von 53/119 (44.5%) auf 4/119 (3.4%) ein, DDG scheint bei
+    # einer derart langen Query (Pflicht-Phrase-Name PLUS 5-7 OR-verknüpfte Pflicht-Phrasen-Begriffe)
+    # fast komplett leerzulaufen statt präziser zu werden. Der Recall-Verlust wiegt schwerer als
+    # die (kleinere) Cross-Gemeinde-Verwechslungsrate, daher zurückgesetzt.
     return [
         '{name} {canton} (' + ' OR '.join(f'"{term}"' for term in group) + ') filetype:pdf'
         for group in term_groups
@@ -129,13 +158,23 @@ def queries_for_canton(canton: str) -> list[str]:
 # Titel-Stichwörter, die auf offensichtliches Rauschen hindeuten statt auf das Reglement selbst -
 # im Testlauf beobachtet (z.B. ein Einladungs-Flyer oder ein Bundesgerichtsentscheid, die das
 # Suchwort nur zufällig im Text enthalten). Kein Allheilmittel, filtert aber die offensichtlichsten
-# Fehltreffer bereits vor dem Download heraus.
+# Fehltreffer bereits vor dem Download heraus. Bewusst SPRACHUNABHÄNGIG eine einzige Liste (statt
+# pro Kanton eine eigene) - die Prüfung läuft für jeden Treffer immer über alle Sprachen, war
+# aber bisher nur Deutsch: im FR-Testlauf rutschte z.B. "RAPT DE GESTION 2023" (= Rapport de
+# gestion, Geschäftsbericht) durch, weil kein französisches Äquivalent in der Liste stand.
 NOISE_TITLE_KEYWORDS = [
+    # Deutsch
     'flyer', 'einladung', 'medienmitteilung', 'pressemitteilung', 'newsletter',
     'traktandenliste', 'protokoll', 'jahresbericht', 'geschäftsbericht',
     'bundesgerichtsentscheid', 'gerichtsentscheid', 'wegleitung', 'merkblatt',
     'infobroschüre', 'informationsbroschüre', 'abstimmungsvorlage', 'vernehmlassung',
     'einwendungsbericht', 'agenda',
+    # Französisch
+    'invitation', 'communiqué de presse', 'ordre du jour', 'procès-verbal',
+    "rapport de gestion", "rapport d'activité", 'brochure', 'préavis',
+    # Italienisch
+    'invito', 'comunicato stampa', "rapporto di gestione", 'rapporto annuale',
+    'verbale', 'ordine del giorno', 'opuscolo',
 ]
 
 
@@ -144,6 +183,28 @@ def _looks_like_noise(title: str) -> bool:
         return False
     text = title.lower()
     return any(kw in text for kw in NOISE_TITLE_KEYWORDS)
+
+
+# Analyse des ersten Volllaufs (2110 Gemeinden, siehe data/audit/bzo_ergebnisse.csv) zeigte: von
+# 905 als "ok" markierten Downloads waren nur 639 (70%) überhaupt auf einer .ch/.swiss-Domain -
+# der Rest war komplett fachfremdes Rauschen (u.a. ein Bank-of-America-Marketing-PDF, OpenAI- und
+# Microsoft-CDN-Dateien, eine US-Behördenseite, eine ungarische Werbeagentur, mehrfach ein
+# Duke-University-Gesundheitspolitik-PDF) - der OR-verknüpfte Boolean-Query-String wird vom
+# DDG-Backend offenbar nicht zuverlässig als Phrasen-Filter respektiert, sondern degeneriert
+# teils zu einer laxen "irgendeines der Wörter"-Suche über den gesamten Web-Index. Diese Domain-
+# Einschränkung ist der wirksamste einzelne Hebel gegen dieses Rauschen: kein einziger echter
+# Treffer im Testlauf lag ausserhalb .ch/.swiss, das Risiko einen echten Treffer zu verlieren ist
+# also sehr gering, während es einen grossen Teil der MAX_CANDIDATES_PER_GEMEINDE-Slots freimacht,
+# die sonst mit irrelevanten Fremd-PDFs verschwendet wurden.
+ALLOWED_TLDS = ('.ch', '.swiss')
+
+
+def _is_swiss_domain(url: str) -> bool:
+    try:
+        domain = urlparse(url).netloc.lower()
+    except Exception:
+        return False
+    return domain.endswith(ALLOWED_TLDS)
 
 
 # Erweiterungspunkt für kantonale Geoportale/Register als Zweitquelle (zuverlässiger als freie
@@ -175,8 +236,28 @@ def get_gemeinden(canton_filter: str | None = None) -> list[dict]:
     url = "https://www.agvchapp.bfs.admin.ch/api/communes/snapshot"
     params = {"date": time.strftime("%d-%m-%Y"), "useBfsCode": "true"}
     log.info("Lade aktuelle Gemeindeliste vom BFS...")
-    resp = requests.get(url, params=params, headers=HEADERS, timeout=TIMEOUT)
-    resp.raise_for_status()
+    # Kritischer Einstiegspunkt - ohne diese Liste kann der ganze Lauf nicht starten. Bei einer
+    # kurzzeitigen serverseitigen Störung (5xx, z.B. 503 "Service Unavailable" - live beobachtet)
+    # mit steigender Wartezeit erneut versuchen statt sofort abzubrechen; 4xx-Fehler (z.B. falsche
+    # URL) werden NICHT wiederholt, da ein erneuter Versuch dort nichts ändern würde.
+    resp = None
+    for attempt in range(1, 4):
+        try:
+            resp = requests.get(url, params=params, headers=HEADERS, timeout=TIMEOUT)
+            resp.raise_for_status()
+            break
+        except requests.exceptions.HTTPError as e:
+            if resp is not None and resp.status_code < 500 or attempt == 3:
+                raise
+            wait = 30 * attempt
+            log.warning("BFS-API meldet %s (Versuch %d/3) - warte %ds und versuche erneut.", e, attempt, wait)
+            time.sleep(wait)
+        except requests.exceptions.RequestException as e:
+            if attempt == 3:
+                raise
+            wait = 30 * attempt
+            log.warning("BFS-API nicht erreichbar (Versuch %d/3): %s - warte %ds und versuche erneut.", attempt, e, wait)
+            time.sleep(wait)
     # Antwort ist CSV (semikolon- oder komma-separiert, BFS liefert i.d.R. ';')
     text = resp.content.decode("utf-8-sig")
     delimiter = ";" if text.count(";") > text.count(",") else ","
@@ -296,7 +377,7 @@ def _fetch_pdf_links_from_page(page_url: str) -> list[str]:
         return []
 
 
-def find_pdf_candidates(name: str, canton: str) -> list[dict]:
+def find_pdf_candidates(name: str, canton: str, query_sleep: float = QUERY_SLEEP_SECONDS) -> list[dict]:
     """Sucht per DuckDuckGo nach PDF-Kandidaten für die Gemeinde - über ALLE Suchgruppen (siehe
     queries_for_canton()) hinweg, nicht nur bis zum ersten Treffer, dedupliziert nach URL. Eine
     Gemeinde kann mehrere relevante Dokumente haben (z.B. Baureglement + separater Zonenplan +
@@ -323,7 +404,7 @@ def find_pdf_candidates(name: str, canton: str) -> list[dict]:
                     break
                 href = r.get("href") or r.get("link") or ""
                 title = (r.get("title") or "").strip()
-                if not href or href in seen_urls or _looks_like_noise(title):
+                if not href or href in seen_urls or _looks_like_noise(title) or not _is_swiss_domain(href):
                     continue
                 if href.lower().endswith(".pdf"):
                     seen_urls.add(href)
@@ -337,11 +418,11 @@ def find_pdf_candidates(name: str, canton: str) -> list[dict]:
                     continue
                 landing_pages_tried += 1
                 for pdf_url in _fetch_pdf_links_from_page(href):
-                    if pdf_url in seen_urls or len(candidates) >= MAX_CANDIDATES_PER_GEMEINDE:
+                    if pdf_url in seen_urls or len(candidates) >= MAX_CANDIDATES_PER_GEMEINDE or not _is_swiss_domain(pdf_url):
                         continue
                     seen_urls.add(pdf_url)
                     candidates.append({"title": title or Path(urlparse(pdf_url).path).stem, "url": pdf_url})
-            time.sleep(1)
+            time.sleep(query_sleep)
 
     # Kantonaler Geoportal-Fallback nur, wenn die Suchmaschinen-Recherche NICHTS gefunden hat -
     # aktuell für keinen Kanton registriert (siehe CANTON_FALLBACK_SOURCES weiter oben).
@@ -380,23 +461,96 @@ def download_pdf(url: str, dest: Path) -> bool:
         return False
 
 
+def _already_processed_bfs(csv_path: Path) -> set:
+    """Liest die BFS-Nummern, die bereits in einem früheren (evtl. abgebrochenen) Lauf in der
+    Ergebnis-CSV stehen - damit ein erneuter Aufruf nach einem Abbruch (Rechner-Standby, Absturz,
+    manueller Stopp) dort fortsetzen kann statt komplett von vorne zu beginnen."""
+    if not csv_path.exists():
+        return set()
+    try:
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            return {row["bfs_nr"] for row in csv.DictReader(f) if row.get("bfs_nr")}
+    except Exception as e:
+        log.warning("Konnte bereits verarbeitete Gemeinden nicht aus %s lesen: %s", csv_path, e)
+        return set()
+
+
+def _not_found_only_bfs(csv_path: Path) -> set:
+    """BFS-Nummern, für die es in der CSV AUSSCHLIESSLICH 'not_found'-Zeilen gibt (kein einziger
+    Treffer/Downloadversuch) - Kandidaten für --retry-not-found, z.B. nach einer vermuteten
+    DDG-Drosselungsphase, in der ganze Gemeinde-Blöcke fälschlich als 'nichts gefunden' endeten."""
+    if not csv_path.exists():
+        return set()
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    by_bfs: dict = {}
+    for r in rows:
+        by_bfs.setdefault(r.get("bfs_nr"), []).append(r.get("status"))
+    return {bfs for bfs, statuses in by_bfs.items() if bfs and all(s == "not_found" for s in statuses)}
+
+
+def _remove_rows_for_bfs(csv_path: Path, bfs_set: set, fieldnames: list) -> None:
+    """Entfernt alle Zeilen für die gegebenen BFS-Nummern aus der Ergebnis-CSV (schreibt die Datei
+    neu) - genutzt von --retry-not-found, damit die alten 'not_found'-Zeilen nicht neben den neu
+    erfassten Zeilen derselben Gemeinde stehen bleiben."""
+    if not csv_path.exists() or not bfs_set:
+        return
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    kept = [r for r in rows if r.get("bfs_nr") not in bfs_set]
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(kept)
+
+
 def main():
     parser = argparse.ArgumentParser(description="BZO-Crawler für Schweizer Gemeinden")
     parser.add_argument("--limit", type=int, default=None, help="Nur die ersten N Gemeinden bearbeiten (Testlauf)")
     parser.add_argument("--canton", type=str, default=None, help="Nur diesen Kanton bearbeiten, z.B. ZH")
     parser.add_argument("--sleep", type=float, default=SLEEP_SECONDS, help="Pause zwischen Gemeinden in Sekunden")
+    parser.add_argument("--query-sleep", type=float, default=QUERY_SLEEP_SECONDS,
+                         help="Pause zwischen den DDG-Suchanfragen innerhalb einer Gemeinde in Sekunden")
+    parser.add_argument("--restart", action="store_true",
+                         help="Nicht fortsetzen, sondern ALLE Gemeinden erneut bearbeiten - Standard ist Fortsetzen: "
+                              "bereits in der Ergebnis-CSV vorhandene Gemeinden werden übersprungen.")
+    parser.add_argument("--retry-not-found", action="store_true",
+                         help="Nur Gemeinden erneut versuchen, für die es AUSSCHLIESSLICH 'not_found'-Zeilen gibt "
+                              "(z.B. nach einer vermuteten DDG-Drosselungsphase) - deren alte Zeilen werden vorher "
+                              "entfernt. Ignoriert --restart; --limit/--canton schränken die Zielmenge zusätzlich ein.")
     args = parser.parse_args()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    gemeinden = get_gemeinden(canton_filter=args.canton)
-    if args.limit:
-        gemeinden = gemeinden[: args.limit]
-    local_index = build_local_reglemente_index()
-
     # document_title: der Name des Dokuments (Suchergebnis-Titel) - pro Gemeinde können mehrere
     # Zeilen entstehen, wenn mehrere passende PDFs gefunden wurden (siehe find_pdf_candidates()).
     fieldnames = ["bfs_nr", "name", "canton", "document_title", "status", "pdf_url", "local_file",
                   "local_reglement_path", "local_comparison"]
+
+    gemeinden = get_gemeinden(canton_filter=args.canton)
+    if args.limit:
+        gemeinden = gemeinden[: args.limit]
+
+    if args.retry_not_found:
+        target_bfs = _not_found_only_bfs(LOG_CSV)
+        before = len(gemeinden)
+        gemeinden = [g for g in gemeinden if str(g["bfs_nr"]) in target_bfs]
+        log.info("Nur Nacherfassung: %d von %d Gemeinden hatten bisher ausschliesslich 'not_found' (%d treffen "
+                 "zusätzlich auf --canton/--limit zu). Ihre alten Zeilen werden entfernt und neu versucht.",
+                 len(target_bfs), before, len(gemeinden))
+        _remove_rows_for_bfs(LOG_CSV, {str(g["bfs_nr"]) for g in gemeinden}, fieldnames)
+    elif not args.restart:
+        done_bfs = _already_processed_bfs(LOG_CSV)
+        if done_bfs:
+            before = len(gemeinden)
+            gemeinden = [g for g in gemeinden if str(g["bfs_nr"]) not in done_bfs]
+            log.info(
+                "Fortsetzen: %d von %d Gemeinden bereits in %s vorhanden, werden übersprungen (%d verbleiben). "
+                "Mit --restart stattdessen alle erneut bearbeiten.",
+                before - len(gemeinden), before, LOG_CSV, len(gemeinden),
+            )
+
+    local_index = build_local_reglemente_index()
+
     file_exists = LOG_CSV.exists()
     with open(LOG_CSV, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -404,7 +558,7 @@ def main():
             writer.writeheader()
 
         for i, g in enumerate(gemeinden, 1):
-            candidates = find_pdf_candidates(g["name"], g["canton"])
+            candidates = find_pdf_candidates(g["name"], g["canton"], query_sleep=args.query_sleep)
             log.info("[%d/%d] %s (%s) - %d Kandidat(en)", i, len(gemeinden), g["name"], g["canton"], len(candidates))
             local_match = local_index.get((g["canton"], _normalize_name(g["name"])))
             local_path_str = str(local_match) if local_match else ""
