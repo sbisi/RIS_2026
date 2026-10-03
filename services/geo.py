@@ -160,6 +160,22 @@ GWR_BAUPERIODE = {
     '8023': 'nach 2015',
 }
 
+# geodienste.ch liefert bis zu ~15 verschiedene Hauptnutzungs-Kategorien pro Gemeinde (amtliche
+# npl_nutzungsplanung-Klassifikation) - zu viele, um sie z.B. farblich alle unterscheidbar zu
+# machen oder einzeln filterbar anzubieten. Feste, gemeinde-unabhängige Gruppierung auf die 4
+# für eine Baupotenzial-Analyse wichtigsten Kategorien + "Andere" - gemeinsam genutzt von der
+# Zonenkarte und dem Hauptnutzungs-Filter der Parzellen-Rangliste (pages/municipality.py,
+# services/parcel_ranking.py), damit dieselbe Zone überall gleich eingeordnet wird.
+HAUPTNUTZUNG_GROUPS = {
+    'Wohnzonen': 'Wohnzonen',
+    'Mischzonen': 'Zentrums- und Mischzonen',
+    'Zentrumszonen': 'Zentrums- und Mischzonen',
+    'Arbeitszonen': 'Arbeitszonen',
+    'allgemeine Landwirtschaftszonen': 'Landwirtschaftszonen',
+    'weitere Landwirtschaftszonen': 'Landwirtschaftszonen',
+}
+HAUPTNUTZUNG_ORDER = ['Wohnzonen', 'Zentrums- und Mischzonen', 'Arbeitszonen', 'Landwirtschaftszonen', 'Andere']
+
 
 def get_building_data(e, n):
     """Eidg. Gebäude- und Wohnungsregister (GWR, BFS): Baujahr, Kategorie/Klasse, Geschosse,
@@ -372,6 +388,124 @@ def get_zone_data_from_geodienste(e, n):
     except requests.exceptions.RequestException as ex:
         logger.warning('get_zone_data_from_geodienste: Anfrage an geodienste.ch fehlgeschlagen für e=%s n=%s: %s', e, n, ex)
     return None
+
+
+_LV95_TO_WGS84 = Transformer.from_crs('EPSG:2056', 'EPSG:4326', always_xy=True)
+
+
+def _reproject_ring(ring):
+    return [list(_LV95_TO_WGS84.transform(x, y)) for x, y, *_ in ring]
+
+
+def _reproject_geometry(geometry):
+    gtype = geometry.get('type')
+    coords = geometry.get('coordinates')
+    if gtype == 'Polygon':
+        new_coords = [_reproject_ring(ring) for ring in coords]
+    elif gtype == 'MultiPolygon':
+        new_coords = [[_reproject_ring(ring) for ring in poly] for poly in coords]
+    else:
+        return geometry
+    return {'type': gtype, 'coordinates': new_coords}
+
+
+def _get_with_retries(url, params, context, retries=2):
+    """requests.get mit kurzen Retries bei Timeout/5xx - api3.geo.admin.ch und geodienste.ch
+    antworten gelegentlich einzelne Male langsam/fehlerhaft unter Last (live beobachtet: ein
+    einzelner Read-Timeout bei 15s für eine Gemeinde, beim nächsten Versuch sofort wieder
+    normal) - ohne Retry wurde ein solcher Ausreisser sonst als dauerhafter Fehler behandelt."""
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.RequestException as ex:
+            last_exc = ex
+            if attempt < retries:
+                logger.warning('%s: Versuch %d/%d fehlgeschlagen (%s) - erneuter Versuch.',
+                                context, attempt + 1, retries + 1, ex)
+    raise last_exc
+
+
+def get_municipality_boundary(bfs):
+    """Aktuelle Gemeindegrenze (swissBOUNDARIES3D, geo.admin.ch) als shapely-Polygon (LV95) +
+    Bbox (LV95), oder None - Grundlage für get_zones_for_municipality(). Der find-Endpoint
+    liefert pro Gemeinde mehrere historische Jahres-Stände (eine Zeile je Jahr seit ca. 1850,
+    live verifiziert an Windisch: 177 Treffer) - is_current_jahr filtert auf den aktuellen."""
+    url = 'https://api3.geo.admin.ch/rest/services/api/MapServer/find'
+    params = {
+        'layer': 'ch.swisstopo.swissboundaries3d-gemeinde-flaeche.fill',
+        'searchField': 'gde_nr', 'searchText': str(int(bfs)), 'searchType': 'exact',
+        'returnGeometry': True, 'sr': 2056, 'geometryFormat': 'geojson',
+    }
+    try:
+        response = _get_with_retries(url, params, 'get_municipality_boundary')
+        current = [f for f in response.json().get('results', []) if f.get('properties', {}).get('is_current_jahr')]
+        if not current:
+            return None
+        feature = current[0]
+        return shape(feature['geometry']), feature['bbox']
+    except requests.exceptions.RequestException as ex:
+        logger.warning('get_municipality_boundary: Abfrage fehlgeschlagen für BFS %s: %s', bfs, ex)
+        return None
+
+
+def get_zones_for_municipality(bfs):
+    """Alle Nutzungszonen (geodienste.ch) innerhalb der Gemeindegrenze - für die Zonenkarte auf
+    Analyse Gemeinden. geodienste.ch's bbox-Parameter filtert NICHT präzise (siehe
+    get_zone_data_from_geodienste) - hier zusätzlich verschärft, weil für eine ganze Gemeinde
+    auch mit grossem Bbox weit mehr als die eigenen Zonen zurückkommen (live verifiziert an
+    Windisch: numberMatched=3942 für eine ~3x3.6km-Bbox). Fix: alle Seiten der Trefferliste
+    laden (OGC-API-Pagination über offset) und serverseitig NICHT vertrauen, sondern jede
+    Geometrie per shapely gegen die echte Gemeindegrenze (swissBOUNDARIES3D) filtern - nur
+    Zonen, deren Zentroid innerhalb der Grenze liegt, gelten als "zu dieser Gemeinde gehörig"."""
+    boundary = get_municipality_boundary(bfs)
+    if boundary is None:
+        return None
+    polygon, bbox_lv95 = boundary
+    minx, miny, maxx, maxy = bbox_lv95
+    lon1, lat1 = convert_coordinates(minx, miny, 'EPSG:2056', 'EPSG:4326')
+    lon2, lat2 = convert_coordinates(maxx, maxy, 'EPSG:2056', 'EPSG:4326')
+
+    url = 'https://www.geodienste.ch/db/npl_nutzungsplanung_v1_2_0/deu/ogcapi/collections/grundnutzung/items'
+    all_features, offset, max_pages = [], 0, 4  # 4 Seiten x 2000 = 8000 Features Obergrenze
+    for _ in range(max_pages):
+        params = {'f': 'json', 'bbox': f'{lon1},{lat1},{lon2},{lat2}', 'limit': 2000, 'offset': offset,
+                   'crs': GEODIENSTE_CRS}
+        try:
+            response = _get_with_retries(url, params, 'get_zones_for_municipality')
+            data = response.json()
+        except requests.exceptions.RequestException as ex:
+            logger.warning('get_zones_for_municipality: Abfrage fehlgeschlagen für BFS %s: %s', bfs, ex)
+            break
+        feats = data.get('features', [])
+        all_features.extend(feats)
+        if len(feats) < 2000 or len(all_features) >= (data.get('numberMatched') or 0):
+            break
+        offset += 2000
+
+    zones = []
+    for idx, feature in enumerate(all_features):
+        try:
+            geom = shape(feature['geometry'])
+        except Exception:
+            continue
+        if not geom.centroid.within(polygon):
+            continue
+        props = feature.get('properties', {})
+        zone = props.get('typ_kommunal_bezeichnung') or props.get('typ_kantonal_bezeichnung')
+        hauptnutzung = props.get('hauptnutzung_bezeichnung')
+        if not zone and not hauptnutzung:
+            continue
+        zones.append({
+            'id': idx,
+            'geometry': _reproject_geometry(feature['geometry']),
+            'zone': zone or hauptnutzung,
+            'hauptnutzung': hauptnutzung or 'Unbekannt',
+            'rechtsstatus': props.get('rechtsstatus'),
+        })
+    return zones
 
 
 def get_zone_data(e, n):

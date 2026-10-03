@@ -1,3 +1,5 @@
+import re
+
 import pandas as pd
 
 from database.db import query_df, table_exists
@@ -275,6 +277,61 @@ def map_data():
         LEFT JOIN fact_municipality fm ON fm.municipality_id=dm.municipality_id
         WHERE fr.overall_score IS NOT NULL
     ''')
+
+def zone_parameters_for_municipality(bfs):
+    """Alle in dim_zone_parameter erfassten Zonen einer Gemeinde mit den vier am häufigsten
+    reglementierten Kennwerten (Ausnützungsziffer/Grenzabstand/Gebäudehöhe/Geschosse, je
+    Standard-Variante) - für die Zonen-Tabelle auf Analyse Gemeinden. Sortiert nach
+    n_source_projects absteigend (die Zone mit den meisten zugrunde liegenden Baugesuchen
+    zuerst), nicht alphabetisch, da das die praktisch relevanteste Zone meist nach oben bringt."""
+    return query_df('''
+        SELECT zone_name AS Zone, n_source_projects AS "Baugesuche (Basis)",
+               ausnuetzungsziffer_standard_value AS "Ausnützungsziffer",
+               grenzabstand_standard_value AS "Grenzabstand",
+               gebaeudehoehe_standard_value AS "Gebäudehöhe",
+               geschosse_standard_value AS "Geschosse"
+        FROM dim_zone_parameter WHERE BFS=?
+        ORDER BY n_source_projects DESC
+    ''', [int(bfs)])
+
+def _parse_max_numeric(value_str):
+    """Extrahiert die grösste Zahl aus einem Ausnützungsziffer-Text wie '≤0.8' oder '0.45; ≤0.45'
+    - dieselbe Logik wie parse_max_numeric() in pages/parzellen.py, hier dupliziert statt
+    importiert: ein services/-Modul darf nicht aus pages/ importieren, sonst führt Dashs eigener
+    Page-Loader zu doppelt registrierten Callbacks (siehe Kommentar oben in services/geo.py)."""
+    if not value_str or value_str in ('–', ''):
+        return None
+    numbers = re.findall(r'\d+(?:[.,]\d+)?', str(value_str))
+    if not numbers:
+        return None
+    return max(float(n.replace(',', '.')) for n in numbers)
+
+def municipality_average_ausnuetzungsziffer():
+    """Durchschnittliche Ausnützungsziffer (Standard) je Gemeinde über alle Zonen mit
+    erfasstem Wert in dim_zone_parameter - grobe Schätzgrösse für eine gemeindeweite
+    Ausbaupotenzial-Hochrechnung (services/are_stats.py + "Potenzial-Ranking" auf Analyse
+    Gemeinden), da die tatsächliche(n) Zone(n) der laut ARE unüberbauten Fläche einer Gemeinde
+    nicht bekannt sind - nur für die ~552 Gemeinden mit mindestens einem erfassten Wert."""
+    df = query_df('''
+        SELECT BFS, ausnuetzungsziffer_standard_value AS az FROM dim_zone_parameter
+        WHERE ausnuetzungsziffer_standard_value IS NOT NULL AND ausnuetzungsziffer_standard_value != '–'
+    ''')
+    df['az_numeric'] = df['az'].apply(_parse_max_numeric)
+    df = df.dropna(subset=['az_numeric'])
+    return df.groupby('BFS', as_index=False)['az_numeric'].mean().rename(columns={'az_numeric': 'Durchschnitt_AZ'})
+
+def municipality_population():
+    """Ständige Wohnbevölkerung (31.12.2024) je Gemeinde - für die Pro-Kopf-Ansicht des
+    Potenzial-Rankings (services/are_stats.py) in pages/municipality.py."""
+    return query_df('''
+        SELECT BFS, Staendige_Bevoelkerung_31_12_2024 AS Bevoelkerung
+        FROM stg_ranking_base WHERE Staendige_Bevoelkerung_31_12_2024 IS NOT NULL
+    ''')
+
+def municipality_coordinates():
+    """BFS + Koordinaten aller Gemeinden - zum Join mit extern geladenen Datensätzen (z.B.
+    services/are_stats.py), die selbst keine Koordinaten liefern."""
+    return query_df('SELECT BFS, Latitude, Longitude FROM stg_coordinates')
 
 def ausnuetzungsziffer_coverage_map():
     """Für jede Gemeinde mit Koordinaten: ob mindestens eine Zone mit erfasstem

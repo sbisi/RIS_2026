@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 REQUEST_TIMEOUT = 60
 _CACHE_TTL_SECONDS = 21600  # 6h - Quelle aktualisiert ohnehin nur täglich
 
-_cache = {}  # bfs -> (timestamp, DataFrame)
+_cache = {}  # bfs -> (timestamp, {'buildings': DataFrame, 'addresses': DataFrame})
 _LV95_TO_WGS84 = Transformer.from_crs('EPSG:2056', 'EPSG:4326', always_xy=True)
 
 
@@ -52,24 +52,13 @@ def _decode(mapping, code):
     return mapping.get(str(int(code)), str(code))
 
 
-def get_bulk_buildings(bfs):
-    """DataFrame mit einer Zeile je Gebäude für die gegebene Gemeinde (BFS-Nummer), oder None
-    wenn die Abfrage fehlschlägt oder die Gemeinde im MADD-Bulk-Register nicht (mehr) existiert."""
-    if bfs is None:
-        return None
-    bfs = int(bfs)
-
-    cached = _cache.get(bfs)
-    if cached and time.time() - cached[0] < _CACHE_TTL_SECONDS:
-        return cached[1]
-
+def _fetch_bulk(bfs):
+    """Lädt die MADD-SQLite einmal und liest sowohl 'building' als auch 'entrance' (für
+    Adressen) daraus - ein Download pro Gemeinde statt zwei, da get_bulk_buildings() und
+    get_bulk_addresses() denselben gecachten Download teilen."""
     url = f'https://public.madd.bfs.admin.ch/data_{bfs}.sqlite'
-    try:
-        resp = requests.get(url, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
-    except requests.exceptions.RequestException as ex:
-        logger.warning('get_bulk_buildings: Abfrage fehlgeschlagen für BFS %s: %s', bfs, ex)
-        return None
+    resp = requests.get(url, timeout=REQUEST_TIMEOUT)
+    resp.raise_for_status()
 
     # delete=False + manuelles os.remove statt "with": unter Windows hält NamedTemporaryFile die
     # Datei exklusiv offen, solange sie nicht geschlossen ist - sqlite3.connect() auf denselben
@@ -80,32 +69,77 @@ def get_bulk_buildings(bfs):
         tmp.close()
         con = sqlite3.connect(tmp.name)
         try:
-            raw = pd.read_sql_query('SELECT * FROM building', con)
+            raw_buildings = pd.read_sql_query('SELECT * FROM building', con)
+            raw_entrances = pd.read_sql_query(
+                'SELECT EGID, STRNAME, DEINR, DPLZ4, DPLZNAME, DOFFADR FROM entrance', con)
         finally:
             con.close()
     finally:
         os.remove(tmp.name)
 
-    if raw.empty:
-        df = raw
+    if raw_buildings.empty:
+        buildings = raw_buildings
     else:
-        df = pd.DataFrame({
-            'egid': raw['EGID'],
-            'e': raw['GKODE'], 'n': raw['GKODN'],
-            'status': raw['GSTAT'].apply(lambda c: _decode(GWR_GEBAEUDESTATUS, c)),
-            'kategorie': raw['GKAT'].apply(lambda c: _decode(GWR_GEBAEUDEKATEGORIE, c)),
-            'klasse': raw['GKLAS'].apply(lambda c: _decode(GWR_GEBAEUDEKLASSE, c)),
-            'baujahr': pd.to_numeric(raw['GBAUJ'], errors='coerce'),
-            'bauperiode': raw['GBAUP'].apply(lambda c: _decode(GWR_BAUPERIODE, c)),
-            'geschosse': pd.to_numeric(raw['GASTW'], errors='coerce'),
-            'gebaeudeflaeche_m2': pd.to_numeric(raw['GAREA'], errors='coerce'),
-            'energiebezugsflaeche_m2': pd.to_numeric(raw['GEBF'], errors='coerce'),
-            'anzahl_wohnungen': pd.to_numeric(raw['GANZWHG'], errors='coerce'),
-            'bezeichnung': raw['GBEZ'],
+        buildings = pd.DataFrame({
+            'egid': raw_buildings['EGID'],
+            'e': raw_buildings['GKODE'], 'n': raw_buildings['GKODN'],
+            'status': raw_buildings['GSTAT'].apply(lambda c: _decode(GWR_GEBAEUDESTATUS, c)),
+            'kategorie': raw_buildings['GKAT'].apply(lambda c: _decode(GWR_GEBAEUDEKATEGORIE, c)),
+            'klasse': raw_buildings['GKLAS'].apply(lambda c: _decode(GWR_GEBAEUDEKLASSE, c)),
+            'baujahr': pd.to_numeric(raw_buildings['GBAUJ'], errors='coerce'),
+            'bauperiode': raw_buildings['GBAUP'].apply(lambda c: _decode(GWR_BAUPERIODE, c)),
+            'geschosse': pd.to_numeric(raw_buildings['GASTW'], errors='coerce'),
+            'gebaeudeflaeche_m2': pd.to_numeric(raw_buildings['GAREA'], errors='coerce'),
+            'energiebezugsflaeche_m2': pd.to_numeric(raw_buildings['GEBF'], errors='coerce'),
+            'anzahl_wohnungen': pd.to_numeric(raw_buildings['GANZWHG'], errors='coerce'),
+            'bezeichnung': raw_buildings['GBEZ'],
         })
-        lon, lat = _LV95_TO_WGS84.transform(df['e'].to_numpy(), df['n'].to_numpy())
-        df['lon'] = lon
-        df['lat'] = lat
+        lon, lat = _LV95_TO_WGS84.transform(buildings['e'].to_numpy(), buildings['n'].to_numpy())
+        buildings['lon'] = lon
+        buildings['lat'] = lat
 
-    _cache[bfs] = (time.time(), df)
-    return df
+    if raw_entrances.empty:
+        addresses = pd.DataFrame(columns=['egid', 'adresse'])
+    else:
+        # Bei mehreren Eingängen je Gebäude (EGID) die offizielle Adresse bevorzugen
+        # (DOFFADR=1), sonst die erste verfügbare.
+        dedup = raw_entrances.sort_values('DOFFADR', ascending=False).drop_duplicates('EGID', keep='first')
+        addresses = pd.DataFrame({
+            'egid': dedup['EGID'],
+            'adresse': dedup.apply(
+                lambda r: f"{r['STRNAME']} {r['DEINR']}, {int(r['DPLZ4'])} {r['DPLZNAME']}".strip(', '), axis=1),
+        })
+
+    return buildings, addresses
+
+
+def _get_cached(bfs):
+    if bfs is None:
+        return None
+    bfs = int(bfs)
+    cached = _cache.get(bfs)
+    if cached and time.time() - cached[0] < _CACHE_TTL_SECONDS:
+        return cached[1]
+    try:
+        buildings, addresses = _fetch_bulk(bfs)
+    except requests.exceptions.RequestException as ex:
+        logger.warning('geo_buildings: Abfrage fehlgeschlagen für BFS %s: %s', bfs, ex)
+        return None
+    entry = {'buildings': buildings, 'addresses': addresses}
+    _cache[bfs] = (time.time(), entry)
+    return entry
+
+
+def get_bulk_buildings(bfs):
+    """DataFrame mit einer Zeile je Gebäude für die gegebene Gemeinde (BFS-Nummer), oder None
+    wenn die Abfrage fehlschlägt oder die Gemeinde im MADD-Bulk-Register nicht (mehr) existiert."""
+    entry = _get_cached(bfs)
+    return entry['buildings'] if entry else None
+
+
+def get_bulk_addresses(bfs):
+    """DataFrame (egid, adresse) - eine Adresse je Gebäude, aus derselben MADD-Quelle wie
+    get_bulk_buildings() (gleicher Cache, kein zusätzlicher Download). Für die Rangliste
+    "Parzellen mit grösstem Ausbaupotenzial" in pages/municipality.py."""
+    entry = _get_cached(bfs)
+    return entry['addresses'] if entry else None
